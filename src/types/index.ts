@@ -100,7 +100,53 @@ export interface Fundamentals {
     dii: number;
     public: number;
   };
+  feedSourceTags?: Record<string, string>;
   lastUpdated: string;
+}
+
+export interface LiveQuote {
+  symbol: string;
+  shortName: string;
+  price: number;
+  previousClose: number;
+  change: number;
+  changePercent: number;
+  dayHigh?: number | null;
+  dayLow?: number | null;
+  high52W?: number | null;
+  low52W?: number | null;
+  pe?: number | null;
+  forwardPE?: number | null;
+  dividendYield?: number | null;
+  marketCap?: number | null;
+  currency?: string;
+  timestamp: string;
+}
+
+export interface IndexItem {
+  name: string;
+  symbol: string;
+  level: number;
+  previousClose: number;
+  change: number;
+  changePercent: number;
+  dayHigh?: number;
+  dayLow?: number;
+}
+
+export interface MarketIndicesData {
+  nifty50: IndexItem;
+  sensex: IndexItem;
+  niftyBank: IndexItem;
+  timestamp: string;
+}
+
+export interface CorporateEventData {
+  symbol: string;
+  targetSymbol: string;
+  dividends: Array<{ date: string; amount: number }>;
+  splits: Array<{ date: string; numerator: number; denominator: number; splitRatio: string }>;
+  timestamp: string;
 }
 
 export interface BenchmarkRecord {
@@ -119,6 +165,8 @@ export interface AppSettings {
   ltcgExemption: number; // default 1,25,000
   lastBackupDate?: string;
   savedScreenerMapping?: Record<string, string>;
+  activeExchange?: 'NSE' | 'BSE';
+  refreshMode?: 'Manual' | 'Auto 15s' | 'Auto 30s' | 'Off';
 }
 
 export interface ImportPreviewRow<T> {

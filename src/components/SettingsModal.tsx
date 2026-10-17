@@ -33,6 +33,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [ltcgRate, setLtcgRate] = useState<number>(settings?.ltcgRate ?? 12.5);
   const [ltcgExemption, setLtcgExemption] = useState<number>(settings?.ltcgExemption ?? 125000);
 
+  // Reset all data double-confirmation state
+  const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
+  const [typedDeleteConfirm, setTypedDeleteConfirm] = useState('');
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetSuccessToast, setResetSuccessToast] = useState(false);
+
   // Cloud sync feature flag (Phase 6)
   const [enableCloudSync, setEnableCloudSync] = useState<boolean>(false);
   const [supabaseUrl, setSupabaseUrl] = useState<string>('');
@@ -235,23 +241,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
               <button
                 type="button"
-                onClick={async () => {
-                  if (
-                    confirm(
-                      'Are you sure you want to reset all data? This deletes all stocks, transactions, and prices in your browser IndexedDB.'
-                    )
-                  ) {
-                    await onResetDatabase();
-                    onClose();
-                  }
+                onClick={() => {
+                  setTypedDeleteConfirm('');
+                  setShowResetConfirmModal(true);
                 }}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-500/10 text-rose-300 border border-rose-500/20 hover:bg-rose-500/20 rounded-lg font-semibold transition-all"
               >
                 <AlertTriangle className="w-3.5 h-3.5" />
-                <span>Reset Database</span>
+                <span>Reset all data</span>
               </button>
             </div>
           </div>
+
+          {/* Success Toast */}
+          {resetSuccessToast && (
+            <div className="p-3 bg-emerald-500/20 border border-emerald-500/40 rounded-xl text-emerald-300 text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span>Database wiped clean! Returned to empty-state dashboard.</span>
+            </div>
+          )}
 
           {/* Footer Actions */}
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
@@ -272,6 +280,81 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </div>
         </form>
       </div>
+
+      {/* Red Double Confirmation Modal */}
+      {showResetConfirmModal && (
+        <div className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#111827] border-2 border-rose-600/60 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="p-3 rounded-xl bg-rose-500/20 border border-rose-500/30 text-rose-400 shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-rose-200">
+                  Are you sure? This will delete all stocks, transactions, and prices.
+                </h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  This action is irreversible. All portfolio records stored locally in your browser IndexedDB will be permanently wiped clean.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-rose-950/30 border border-rose-900/50 rounded-xl p-3.5 space-y-2">
+              <label className="block text-xs font-medium text-rose-300">
+                To confirm, type <span className="font-mono font-bold text-rose-200 tracking-wider">DELETE</span> below:
+              </label>
+              <input
+                type="text"
+                autoFocus
+                value={typedDeleteConfirm}
+                onChange={(e) => setTypedDeleteConfirm(e.target.value)}
+                placeholder="Type DELETE"
+                className="w-full bg-slate-950 border border-rose-700/60 rounded-lg px-3 py-2 text-xs font-mono text-rose-100 placeholder-slate-600 focus:outline-none focus:border-rose-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isResetting}
+                onClick={() => {
+                  setShowResetConfirmModal(false);
+                  setTypedDeleteConfirm('');
+                }}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={typedDeleteConfirm !== 'DELETE' || isResetting}
+                onClick={async () => {
+                  setIsResetting(true);
+                  try {
+                    await onResetDatabase();
+                    setShowResetConfirmModal(false);
+                    setResetSuccessToast(true);
+                    setTimeout(() => {
+                      setResetSuccessToast(false);
+                      onClose();
+                    }, 1200);
+                  } finally {
+                    setIsResetting(false);
+                  }
+                }}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  typedDeleteConfirm === 'DELETE' && !isResetting
+                    ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-900/30 cursor-pointer'
+                    : 'bg-rose-950 text-rose-600/60 border border-rose-900/40 cursor-not-allowed'
+                }`}
+              >
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>{isResetting ? 'Wiping Database...' : 'Permanently Delete Everything'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

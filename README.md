@@ -176,4 +176,54 @@ Because Dalal Diary's stores data in your browser's IndexedDB, clearing your bro
 - [x] **Phase 3: Analysis** *(Fundamental X-Ray 12-metric grid, 52W range bar, Coffee Can / Undervalued / Dividend scanners, passive alert badges)*
 - [x] **Phase 4: Returns, Tax & Dividends** *(XIRR, benchmark vs Nifty 50, FY realized P&L, Budget 2024 STCG/LTCG tax view with grandfathering, dividend calendar & corporate action management)*
 - [x] **Phase 5: Planning Tools** *(Buy-Zone Watchlist, SIP + Lump Sum + DRIP multi-year simulator)*
-- [x] **Phase 6: Settings & Architecture Polish** *(Settings modal, Budget 2024 tax rates, optional Supabase cloud sync toggle)*
+- [x] **Phase 6: Settings & Architecture Polish** *(Settings modal, Budget 2024 tax rates, double confirmation typed DELETE reset)*
+- [x] **Live Feed & Directory Upgrade:**
+  - **Price Proxy Server (`/server`):** High-performance Express service fetching Yahoo Finance quotes and market events with 15s in-memory caching and zero user data storage.
+  - **Full Stock Directory & Search:** 98+ pre-bundled Indian blue chips, instant fuzzy search with exchange badges, live Yahoo symbol fallback, and Master Stock Directory browser.
+  - **Live Indices Ribbon:** Real-time NIFTY 50, SENSEX, and NIFTY BANK quotes with market hours check (09:15–15:30 IST), NSE/BSE toggle, and refresh mode controller (Manual, 15s, 30s, Off).
+  - **Corporate Actions Feed:** Live upcoming and recent dividends, splits, and bonuses with 1-click apply and undo, exact payout calculator, and direct links to official NSE and BSE announcement portals.
+
+---
+
+## 🚀 Deployment Guide on Render
+
+Dalal Diary's consists of two complementary components for production:
+1. **Frontend:** React SPA deployed as a **Render Static Site**.
+2. **Price Proxy Server (`/server`):** Node.js Express service deployed as a **Render Web Service**.
+
+### 1. Deploy the Price Proxy Server (`/server`)
+
+1. Go to your [Render Dashboard](https://dashboard.render.com/) and click **New +** > **Web Service**.
+2. Select your repository.
+3. Configure the service:
+   | Setting | Value |
+   | :--- | :--- |
+   | **Name** | `dalal-diarys-api` |
+   | **Root Directory** | `server` |
+   | **Environment** | `Node` |
+   | **Build Command** | `npm install` |
+   | **Start Command** | `node index.js` |
+   | **Instance Type** | `Free` |
+4. Set Environment Variables:
+   - `PORT`: `3001` (or let Render set default)
+   - `FRONTEND_ORIGIN`: `https://dalal-diarys.onrender.com` (your frontend static site URL)
+5. Click **Create Web Service**. Note your API service URL (e.g. `https://dalal-diarys-api.onrender.com`).
+
+### 2. Deploy the Static Frontend
+
+1. Click **New +** > **Static Site**.
+2. Select your repository.
+3. Configure the static site:
+   | Setting | Value |
+   | :--- | :--- |
+   | **Name** | `dalal-diarys` |
+   | **Branch** | `main` |
+   | **Build Command** | `npm install && npm run build` |
+   | **Publish Directory** | `dist` |
+4. Set Environment Variable:
+   - `VITE_PRICE_SERVER_URL`: `https://dalal-diarys-api.onrender.com` (from Step 1)
+5. Add Single Page App Rewrite Rule under **Redirects / Rewrites**:
+   - **Source:** `/*`
+   - **Destination:** `/index.html`
+   - **Action:** `Rewrite`
+6. Click **Create Static Site**.

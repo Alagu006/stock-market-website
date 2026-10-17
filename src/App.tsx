@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   db,
@@ -19,13 +19,25 @@ import type {
   DividendRecord,
   BenchmarkRecord,
   AppSettings,
+  MarketIndicesData,
+  LiveQuote,
 } from './types';
 import {
   calculateAllHoldings,
   calculatePortfolioKPIs,
   calculateSectorAllocations,
 } from './services/calculations';
+import {
+  checkProxyHealth,
+  fetchLiveMarketIndices,
+  fetchLiveQuotes,
+  getYahooSymbolForExchange,
+  getFallbackYahooSymbol,
+  isIndianMarketOpen,
+  mergeFeedFundamentals,
+} from './services/priceFeed';
 import { Navbar, type ActiveTabType } from './components/Navbar';
+import { TopIndicesRibbon } from './components/TopIndicesRibbon';
 import { KPICards } from './components/KPICards';
 import { SectorAllocationCard } from './components/SectorAllocationCard';
 import { HoldingsTable } from './components/HoldingsTable';
@@ -34,6 +46,7 @@ import { FundamentalXRayView } from './components/FundamentalXRayView';
 import { ScannersView } from './components/ScannersView';
 import { ReturnsAndTaxView } from './components/ReturnsAndTaxView';
 import { DividendsAndCorporateActionsView } from './components/DividendsAndCorporateActionsView';
+import { CorporateActionsFeedView } from './components/CorporateActionsFeedView';
 import { WatchlistView } from './components/WatchlistView';
 import { SimulatorView } from './components/SimulatorView';
 import { ImportExportView } from './components/ImportExportView';
@@ -44,6 +57,7 @@ import { StockMasterModal } from './components/StockMasterModal';
 import { PriceUpdateModal } from './components/PriceUpdateModal';
 import { BackupRestoreModal } from './components/BackupRestoreModal';
 import { SettingsModal } from './components/SettingsModal';
+import { StockDirectoryModal } from './components/StockDirectoryModal';
 import { ShieldCheck } from 'lucide-react';
 
 export function App() {
@@ -62,8 +76,18 @@ export function App() {
   // Active Navigation & Controls
   const [costMethod, setCostMethod] = useState<CostMethod>('Average Cost');
   const [activeTab, setActiveTab] = useState<ActiveTabType>('portfolio');
-  const [searchQuery, setSearchQuery] = useState('');
   const [xrayStockId, setXrayStockId] = useState<number | undefined>(undefined);
+
+  // Live Price Feed State
+  const [activeExchange, setActiveExchange] = useState<'NSE' | 'BSE'>('NSE');
+  const [refreshMode, setRefreshMode] = useState<'Manual' | 'Auto 15s' | 'Auto 30s' | 'Off'>('Auto 15s');
+  const [indices, setIndices] = useState<MarketIndicesData | null>(null);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [lastSynced, setLastSynced] = useState<Date | null>(null);
+  const [serverStatus, setServerStatus] = useState<{ isOnline: boolean; message: string }>({
+    isOnline: false,
+    message: 'Connecting to price server...',
+  });
 
   // Modals state
   const [isAddTxOpen, setIsAddTxOpen] = useState(false);
@@ -80,13 +104,20 @@ export function App() {
   const [isStockMasterOpen, setIsStockMasterOpen] = useState(false);
   const [isBackupOpen, setIsBackupOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isStockDirectoryOpen, setIsStockDirectoryOpen] = useState(false);
 
   // Sync settings when loaded
   useEffect(() => {
-    if (currentSettings?.costMethod) {
-      setCostMethod(currentSettings.costMethod);
+    if (currentSettings) {
+      if (currentSettings.costMethod) setCostMethod(currentSettings.costMethod);
+      if (currentSettings.activeExchange) setActiveExchange(currentSettings.activeExchange);
+      if (currentSettings.refreshMode) setRefreshMode(currentSettings.refreshMode);
     } else {
-      getOrInitSettings().then((s) => setCostMethod(s.costMethod));
+      getOrInitSettings().then((s) => {
+        setCostMethod(s.costMethod);
+        if (s.activeExchange) setActiveExchange(s.activeExchange);
+        if (s.refreshMode) setRefreshMode(s.refreshMode);
+      });
     }
   }, [currentSettings]);
 
@@ -95,6 +126,161 @@ export function App() {
     setCostMethod(newMethod);
     await updateCostMethodSetting(newMethod);
   };
+
+  // Handle toggle active exchange
+  const handleToggleExchange = async (newEx: 'NSE' | 'BSE') => {
+    setActiveExchange(newEx);
+    if (currentSettings?.id) {
+      await db.settings.update(currentSettings.id, { activeExchange: newEx });
+    }
+  };
+
+  // Handle change refresh mode
+  const handleChangeRefreshMode = async (mode: 'Manual' | 'Auto 15s' | 'Auto 30s' | 'Off') => {
+    setRefreshMode(mode);
+    if (currentSettings?.id) {
+      await db.settings.update(currentSettings.id, { refreshMode: mode });
+    }
+  };
+
+  // 1. Check Server Health on Mount & periodically
+  useEffect(() => {
+    let isMounted = true;
+    const ping = async () => {
+      const status = await checkProxyHealth();
+      if (isMounted) setServerStatus(status);
+    };
+    ping();
+    const interval = setInterval(ping, 30000); // Check every 30s
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // 2. Fetch Live Quotes & Indices Function with Daily Snapshot Deduplication
+  const syncLivePrices = useCallback(async () => {
+    if (stocks.length === 0) return;
+    setIsSyncing(true);
+
+    try {
+      // A. Fetch Indices
+      const indicesData = await fetchLiveMarketIndices();
+      if (indicesData) {
+        setIndices(indicesData);
+        // Save NIFTY 50 checkpoint into db.benchmarkRecords (deduplicating by date)
+        if (indicesData.nifty50 && indicesData.nifty50.level > 0) {
+          const todayDate = new Date().toISOString().split('T')[0];
+          const existingBench = await db.benchmarkRecords
+            .where('name')
+            .equalsIgnoreCase('NIFTY 50')
+            .filter((b) => b.date === todayDate)
+            .first();
+
+          if (existingBench && existingBench.id) {
+            await db.benchmarkRecords.update(existingBench.id, { level: indicesData.nifty50.level });
+          } else {
+            await db.benchmarkRecords.add({
+              name: 'NIFTY 50',
+              date: todayDate,
+              level: indicesData.nifty50.level,
+              createdAt: new Date().toISOString(),
+            });
+          }
+        }
+      }
+
+      // B. Build symbols list for all stocks held or watchlisted
+      const targetSymbols: string[] = [];
+      const stockLookup = new Map<string, Stock>();
+
+      for (const st of stocks) {
+        const primaryYahoo = getYahooSymbolForExchange(st, activeExchange);
+        const fallbackYahoo = getFallbackYahooSymbol(st, activeExchange);
+        targetSymbols.push(primaryYahoo, fallbackYahoo);
+        stockLookup.set(primaryYahoo, st);
+        stockLookup.set(fallbackYahoo, st);
+      }
+
+      const quotes = await fetchLiveQuotes(targetSymbols);
+      const quotesMap = new Map<string, LiveQuote>();
+      quotes.forEach((q) => quotesMap.set(q.symbol, q));
+
+      // C. Update Prices in DB (Deduplicating at most one snapshot per stock per day)
+      const today = new Date().toISOString().split('T')[0];
+      const nowISO = new Date().toISOString();
+
+      await db.transaction('rw', [db.priceRecords, db.fundamentals], async () => {
+        for (const st of stocks) {
+          if (!st.id) continue;
+          const primaryYahoo = getYahooSymbolForExchange(st, activeExchange);
+          const fallbackYahoo = getFallbackYahooSymbol(st, activeExchange);
+
+          const quote = quotesMap.get(primaryYahoo) || quotesMap.get(fallbackYahoo);
+          if (quote && quote.price > 0) {
+            // Deduplicate: check if today's price already exists for this stock
+            const existingTodayRecord = await db.priceRecords
+              .where('stockId')
+              .equals(st.id)
+              .filter((p) => p.date === today)
+              .first();
+
+            if (existingTodayRecord && existingTodayRecord.id) {
+              await db.priceRecords.update(existingTodayRecord.id, {
+                price: quote.price,
+                createdAt: nowISO,
+              });
+            } else {
+              await db.priceRecords.add({
+                stockId: st.id,
+                symbol: st.symbol,
+                price: quote.price,
+                date: today,
+                createdAt: nowISO,
+              });
+            }
+
+            // Auto-fill empty fundamentals without overwriting user manual/Screener values
+            const existingFund = await db.fundamentals
+              .where('stockId')
+              .equals(st.id)
+              .first();
+
+            const mergedFund = mergeFeedFundamentals(existingFund, quote, st.id, st.symbol);
+            await db.fundamentals.put(mergedFund);
+          }
+        }
+      });
+
+      setLastSynced(new Date());
+    } catch (err) {
+      console.warn('[App] Error during price synchronization:', err);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [stocks, activeExchange]);
+
+  // 3. Auto-Refresh Timer effect
+  useEffect(() => {
+    // Initial sync
+    syncLivePrices();
+
+    if (refreshMode === 'Off' || refreshMode === 'Manual') return;
+
+    const intervalSeconds = refreshMode === 'Auto 15s' ? 15 : 30;
+
+    const interval = setInterval(() => {
+      // Pause if tab is hidden in background
+      if (document.visibilityState !== 'visible') return;
+
+      // Stop auto-refresh outside market hours (show last close)
+      if (!isIndianMarketOpen()) return;
+
+      syncLivePrices();
+    }, intervalSeconds * 1000);
+
+    return () => clearInterval(interval);
+  }, [refreshMode, syncLivePrices]);
 
   // LIVE CALCULATIONS (Pure functions, recalculating entire state on-the-fly)
   const allHoldings = useMemo(() => {
@@ -107,19 +293,6 @@ export function App() {
       costMethod
     );
   }, [stocks, transactions, corporateActions, priceRecords, fundamentalsList, costMethod]);
-
-  // Filter holdings based on search
-  const filteredHoldings = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
-    if (!q) return allHoldings;
-    return allHoldings.filter(
-      (h) =>
-        h.stock.symbol.toLowerCase().includes(q) ||
-        h.stock.bseCode.toLowerCase().includes(q) ||
-        h.stock.name.toLowerCase().includes(q) ||
-        h.stock.sector.toLowerCase().includes(q)
-    );
-  }, [allHoldings, searchQuery]);
 
   // Portfolio KPIs
   const portfolioKPIs = useMemo(() => {
@@ -154,11 +327,21 @@ export function App() {
   };
 
   // Handlers for stocks
-  const handleAddStock = async (stockData: Omit<Stock, 'id' | 'createdAt'>) => {
-    await db.stocks.add({
+  const handleAddStock = async (stockData: Omit<Stock, 'id' | 'createdAt'>, livePrice?: number) => {
+    const id = await db.stocks.add({
       ...stockData,
       createdAt: new Date().toISOString(),
     });
+
+    if (livePrice && livePrice > 0) {
+      await db.priceRecords.add({
+        stockId: id,
+        symbol: stockData.symbol,
+        price: livePrice,
+        date: new Date().toISOString().split('T')[0],
+        createdAt: new Date().toISOString(),
+      });
+    }
   };
 
   const handleUpdateStock = async (id: number, stockData: Partial<Stock>) => {
@@ -187,7 +370,7 @@ export function App() {
     );
   };
 
-  // Handlers for prices
+  // Handlers for manual prices (Manual entry must always keep working!)
   const handleAddPriceRecord = async (
     stockId: number,
     symbol: string,
@@ -339,15 +522,29 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-[#0b0f17] text-slate-100 flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
+      {/* Top Indices Ribbon (NIFTY 50, SENSEX, NIFTY BANK & Live Feed Controls) */}
+      <TopIndicesRibbon
+        indices={indices}
+        activeExchange={activeExchange}
+        onToggleExchange={handleToggleExchange}
+        refreshMode={refreshMode}
+        onChangeRefreshMode={handleChangeRefreshMode}
+        isSyncing={isSyncing}
+        onManualSync={syncLivePrices}
+        lastSynced={lastSynced}
+        serverStatus={serverStatus}
+      />
+
       {/* Top Navigation */}
       <Navbar
         costMethod={costMethod}
         onCostMethodChange={handleCostMethodChange}
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
         activeTab={activeTab}
         onTabChange={setActiveTab}
         settings={currentSettings}
+        stocks={stocks}
+        onImportStock={handleAddStock}
+        onOpenDirectoryModal={() => setIsStockDirectoryOpen(true)}
         onOpenAddTx={() => {
           setAddTxPreFill({});
           setIsAddTxOpen(true);
@@ -356,6 +553,7 @@ export function App() {
         onOpenBackup={() => setIsBackupOpen(true)}
         onOpenTargetAvg={() => setTargetAvgStockId(stocks[0]?.id || null)}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onNavigateToStock={(id) => handleNavigateToXRay(id)}
       />
 
       {/* Main Content Area */}
@@ -369,7 +567,7 @@ export function App() {
               totalPortfolioValue={portfolioKPIs.currentValue}
             />
             <HoldingsTable
-              holdings={filteredHoldings}
+              holdings={allHoldings}
               costMethod={costMethod}
               onOpenLotHistory={(stockId) => setLotHistoryStockId(stockId)}
               onOpenTargetAvg={(stockId) => setTargetAvgStockId(stockId)}
@@ -389,7 +587,7 @@ export function App() {
             transactions={transactions}
             corporateActions={corporateActions}
             costMethod={costMethod}
-            searchQuery={searchQuery}
+            searchQuery=""
             onOpenPriceUpdate={(stockId) => setPriceUpdateStockId(stockId)}
             onOpenAddTx={(stockId) => handlePreFillBuy(stockId)}
             onOpenStockMaster={() => setIsStockMasterOpen(true)}
@@ -454,6 +652,19 @@ export function App() {
           />
         )}
 
+        {/* Step 5: Corporate Actions Live Feed */}
+        {activeTab === 'events' && (
+          <CorporateActionsFeedView
+            stocks={stocks}
+            holdings={allHoldings}
+            existingDividends={dividendRecords}
+            existingCorporateActions={corporateActions}
+            onAddDividend={handleAddDividend}
+            onAddCorporateAction={handleAddCorporateAction}
+            onDeleteCorporateAction={handleDeleteCorporateAction}
+          />
+        )}
+
         {/* Phase 5: Buy-Zone Watchlist */}
         {activeTab === 'watchlist' && (
           <WatchlistView
@@ -507,7 +718,7 @@ export function App() {
               <span>100% Client-Side IndexedDB</span>
             </span>
             <span>•</span>
-            <span className="text-emerald-400 font-semibold">Phases 1-6 Complete</span>
+            <span className="text-emerald-400 font-semibold">Live NSE/BSE Feed Connected</span>
           </div>
         </div>
       </footer>
@@ -565,7 +776,15 @@ export function App() {
         onDeleteStock={handleDeleteStock}
       />
 
-      {/* 5. Price Update Modal */}
+      {/* 5. Master Stock Directory Modal */}
+      <StockDirectoryModal
+        isOpen={isStockDirectoryOpen}
+        onClose={() => setIsStockDirectoryOpen(false)}
+        existingStocks={stocks}
+        onImportStock={handleAddStock}
+      />
+
+      {/* 6. Price Update Modal (Manual price entry always kept working) */}
       <PriceUpdateModal
         isOpen={priceUpdateStockId !== null}
         onClose={() => setPriceUpdateStockId(null)}
@@ -574,7 +793,7 @@ export function App() {
         onAddPriceRecord={handleAddPriceRecord}
       />
 
-      {/* 6. Backup & Restore Modal */}
+      {/* 7. Backup & Restore Modal */}
       <BackupRestoreModal
         isOpen={isBackupOpen}
         onClose={() => setIsBackupOpen(false)}
@@ -582,7 +801,7 @@ export function App() {
         onDataChanged={() => {}}
       />
 
-      {/* 7. Settings Modal (Phase 6) */}
+      {/* 8. Settings Modal */}
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

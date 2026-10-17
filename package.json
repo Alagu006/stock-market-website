@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:stocklist": "node scripts/build-stocklist.js",
     "lint": "oxlint",
     "preview": "vite preview"
   },
