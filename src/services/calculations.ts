@@ -10,6 +10,7 @@ import type {
   SectorAllocation,
   LotHistoryItem,
   DividendRecord,
+  NSEChargesBreakdown,
 } from '../types';
 import { isDateOlderThanDays } from '../utils/formatters';
 
@@ -1269,3 +1270,331 @@ export function simulateSIPAndLumpSum(params: {
     wealthMultiple,
   };
 }
+
+/**
+ * Task 5: Auto-calculate NSE Brokerage & Statutory Charges
+ * Standard NSE Delivery:
+ * - Brokerage: 0.5% (0.005)
+ * - STT: 0.1% (0.001) on Buy and Sell delivery
+ * - NSE Exchange Transaction Charge: 0.00297%
+ * - SEBI Turnover Fee: 0.0001%
+ * - Stamp Duty: 0.015% on Buy, 0% on Sell
+ * - GST: 18% on (Brokerage + Exchange Charges + SEBI Fee)
+ */
+export function calculateNSECharges(
+  type: 'BUY' | 'SELL',
+  quantity: number,
+  price: number
+): NSEChargesBreakdown {
+  const turnover = Math.round(quantity * price * 100) / 100;
+  if (turnover <= 0 || isNaN(turnover)) {
+    return {
+      turnover: 0,
+      brokerage: 0,
+      stt: 0,
+      exchangeCharges: 0,
+      sebiFee: 0,
+      stampDuty: 0,
+      gst: 0,
+      totalCharges: 0,
+      netTotal: 0,
+    };
+  }
+
+  // Brokerage: 0.5% (0.005)
+  const brokerage = Math.round(turnover * 0.005 * 100) / 100;
+
+  // STT: 0.1% (0.001) on Buy & Sell delivery
+  const stt = Math.round(turnover * 0.001 * 100) / 100;
+
+  // NSE Exchange Transaction Charge: 0.00297% (0.0000297)
+  const exchangeCharges = Math.round(turnover * 0.0000297 * 100) / 100;
+
+  // SEBI Turnover Fee: 0.0001% (0.000001)
+  const sebiFee = Math.round(turnover * 0.000001 * 100) / 100;
+
+  // Stamp Duty: 0.015% (0.00015) on Buy transactions, 0% on Sell
+  const stampDuty = type === 'BUY' ? Math.round(turnover * 0.00015 * 100) / 100 : 0;
+
+  // GST: 18% on (Brokerage + NSE Exchange Transaction Charge + SEBI Fee)
+  const gstBase = brokerage + exchangeCharges + sebiFee;
+  const gst = Math.round(gstBase * 0.18 * 100) / 100;
+
+  // Total Charges
+  const totalCharges =
+    Math.round((brokerage + stt + exchangeCharges + sebiFee + stampDuty + gst) * 100) / 100;
+
+  // Net Total Payable (Buy) or Receivable (Sell)
+  const netTotal =
+    type === 'BUY'
+      ? Math.round((turnover + totalCharges) * 100) / 100
+      : Math.round((turnover - totalCharges) * 100) / 100;
+
+  return {
+    turnover,
+    brokerage,
+    stt,
+    exchangeCharges,
+    sebiFee,
+    stampDuty,
+    gst,
+    totalCharges,
+    netTotal,
+  };
+}
+
+/**
+ * Task 1: Parse BSE ROE / PB string (e.g., "25.99/4.52")
+ */
+export function parseBseRoePb(roePbStr?: string): { roe?: number; pbRatio?: number } {
+  if (!roePbStr || typeof roePbStr !== 'string') return {};
+  const cleaned = roePbStr.replace(/%/g, '').trim();
+  const parts = cleaned.split('/').map((s) => s.trim());
+  const roe = parts[0] && !isNaN(Number(parts[0])) ? Number(parts[0]) : undefined;
+  const pbRatio = parts[1] && !isNaN(Number(parts[1])) ? Number(parts[1]) : undefined;
+  return { roe, pbRatio };
+}
+
+/**
+ * Task 1: Parse BSE EPS string (e.g., "15.13/16.11" Standalone/Consolidated)
+ */
+export function parseBseEps(epsStr?: string): {
+  standalone?: number;
+  consolidated?: number;
+  primaryEps?: number;
+} {
+  if (!epsStr || typeof epsStr !== 'string') return {};
+  const parts = epsStr.split('/').map((s) => s.trim());
+  const standalone = parts[0] && !isNaN(Number(parts[0])) ? Number(parts[0]) : undefined;
+  const consolidated = parts[1] && !isNaN(Number(parts[1])) ? Number(parts[1]) : undefined;
+  const primaryEps = consolidated !== undefined ? consolidated : standalone;
+  return { standalone, consolidated, primaryEps };
+}
+
+/**
+ * Task 1: Calculate Intrinsic Value (Fair)
+ * Formula: Graham Number = sqrt(22.5 * EPS * BookValue)
+ * If BookValue not explicitly provided, BookValue = Current Price / PB
+ */
+export function calculateIntrinsicValue(
+  eps?: number,
+  bookValue?: number,
+  expectedGrowthRate?: number
+): number | undefined {
+  if (!eps || eps <= 0) return undefined;
+
+  if (bookValue && bookValue > 0) {
+    const val = Math.sqrt(22.5 * eps * bookValue);
+    return Math.round(val * 100) / 100;
+  }
+
+  // Fallback: EPS-growth formula = EPS * (8.5 + 2 * g)
+  if (expectedGrowthRate !== undefined && expectedGrowthRate > 0) {
+    const g = Math.min(25, expectedGrowthRate);
+    const val = eps * (8.5 + 2 * g);
+    return Math.round(val * 100) / 100;
+  }
+
+  return undefined;
+}
+
+/**
+ * Task 1: Calculate Margin of Safety (%)
+ * Formula: ((Intrinsic Value - Current Price) / Intrinsic Value) * 100
+ */
+export function calculateMarginOfSafety(
+  intrinsicValue?: number,
+  currentPrice?: number
+): number | undefined {
+  if (!intrinsicValue || !currentPrice || intrinsicValue <= 0 || currentPrice <= 0) {
+    return undefined;
+  }
+  const mos = ((intrinsicValue - currentPrice) / intrinsicValue) * 100;
+  return Math.round(mos * 100) / 100;
+}
+
+/**
+ * Task 6: Stock-Specific Long-Term Compounding Simulation
+ */
+export interface StockCompoundingYearRow {
+  year: number;
+  startingShares: number;
+  purchasedShares: number;
+  reinvestedShares: number;
+  endingShares: number;
+  sharePrice: number;
+  investedThisYear: number;
+  cumulativeInvested: number;
+  brokerageAndChargesPaid: number;
+  dividendsEarned: number;
+  corpusValue: number;
+  wealthGain: number;
+}
+
+export interface StockCompoundingResult {
+  yearBreakdown: StockCompoundingYearRow[];
+  finalShares: number;
+  finalInvested: number;
+  finalCorpus: number;
+  totalDividends: number;
+  totalCharges: number;
+  wealthGain: number;
+  cagr: number;
+}
+
+export function simulateStockCompounding(params: {
+  mode: 'lumpSum' | 'accumulation';
+  initialShares?: number;
+  initialCapital?: number;
+  initialPrice: number;
+  expectedCagrPct: number; // Stock price CAGR %
+  dividendYieldPct: number; // Dividend yield %
+  drip: boolean; // Reinvest dividends into shares
+  horizonYears: number;
+  // Accumulation params:
+  accumulationType?: 'shares' | 'amount';
+  periodicShares?: number;
+  periodicAmount?: number;
+  frequencyPerYear?: number; // 12 for monthly, 4 for quarterly, 1 for annual
+}): StockCompoundingResult {
+  const {
+    mode,
+    initialPrice,
+    expectedCagrPct,
+    dividendYieldPct,
+    drip,
+    horizonYears,
+    accumulationType = 'amount',
+    periodicShares = 0,
+    periodicAmount = 0,
+    frequencyPerYear = 12,
+  } = params;
+
+  const rPrice = Math.max(-0.5, expectedCagrPct / 100);
+  const rDiv = Math.max(0, dividendYieldPct / 100);
+
+  // Initial purchase
+  let startingShares = 0;
+  let initialTurnover = 0;
+  if (mode === 'lumpSum') {
+    if (params.initialShares && params.initialShares > 0) {
+      startingShares = params.initialShares;
+      initialTurnover = startingShares * initialPrice;
+    } else if (params.initialCapital && params.initialCapital > 0) {
+      initialTurnover = params.initialCapital;
+      startingShares = Math.floor(initialTurnover / initialPrice);
+    }
+  } else {
+    // Accumulation starting shares
+    if (params.initialShares && params.initialShares > 0) {
+      startingShares = params.initialShares;
+      initialTurnover = startingShares * initialPrice;
+    }
+  }
+
+  const initialCharges =
+    initialTurnover > 0 ? calculateNSECharges('BUY', startingShares, initialPrice).totalCharges : 0;
+  let cumInvested = initialTurnover + initialCharges;
+  let cumCharges = initialCharges;
+  let cumDividends = 0;
+
+  let currentShares = startingShares;
+  let currentPrice = initialPrice;
+
+  const yearBreakdown: StockCompoundingYearRow[] = [];
+
+  for (let yr = 1; yr <= horizonYears; yr++) {
+    const yearStartShares = currentShares;
+    let yearPurchasedShares = 0;
+    let yearInvestedCash = 0;
+    let yearCharges = 0;
+
+    // Price appreciates over the year
+    const endOfYearPrice = Math.round(currentPrice * (1 + rPrice) * 100) / 100;
+    // Average price during the year for periodic buys
+    const avgYearPrice = Math.round(((currentPrice + endOfYearPrice) / 2) * 100) / 100;
+
+    if (mode === 'accumulation') {
+      const times = Math.max(1, frequencyPerYear);
+      for (let f = 0; f < times; f++) {
+        let buyQty = 0;
+        let buyTurnover = 0;
+
+        if (accumulationType === 'shares') {
+          buyQty = Math.max(0, periodicShares);
+          buyTurnover = buyQty * avgYearPrice;
+        } else {
+          const perBuyAmt = Math.max(0, periodicAmount);
+          buyQty = avgYearPrice > 0 ? Math.floor(perBuyAmt / avgYearPrice) : 0;
+          buyTurnover = buyQty * avgYearPrice;
+        }
+
+        if (buyQty > 0) {
+          const chg = calculateNSECharges('BUY', buyQty, avgYearPrice).totalCharges;
+          yearPurchasedShares += buyQty;
+          yearInvestedCash += buyTurnover + chg;
+          yearCharges += chg;
+        }
+      }
+    }
+
+    currentShares += yearPurchasedShares;
+    cumInvested += yearInvestedCash;
+    cumCharges += yearCharges;
+
+    // Dividend payout based on year-end price or average
+    const dividendPerShare = endOfYearPrice * rDiv;
+    const yearDividends = Math.round(currentShares * dividendPerShare * 100) / 100;
+    cumDividends += yearDividends;
+
+    let yearReinvestedShares = 0;
+    if (drip && yearDividends > 0 && endOfYearPrice > 0) {
+      // Reinvest dividends into shares
+      yearReinvestedShares = Math.floor(yearDividends / endOfYearPrice);
+      currentShares += yearReinvestedShares;
+    }
+
+    const corpusValue = Math.round(currentShares * endOfYearPrice * 100) / 100;
+    const wealthGain = Math.round((corpusValue - cumInvested) * 100) / 100;
+
+    yearBreakdown.push({
+      year: yr,
+      startingShares: yearStartShares,
+      purchasedShares: yearPurchasedShares,
+      reinvestedShares: yearReinvestedShares,
+      endingShares: currentShares,
+      sharePrice: endOfYearPrice,
+      investedThisYear: Math.round(yearInvestedCash * 100) / 100,
+      cumulativeInvested: Math.round(cumInvested * 100) / 100,
+      brokerageAndChargesPaid: Math.round(yearCharges * 100) / 100,
+      dividendsEarned: yearDividends,
+      corpusValue,
+      wealthGain,
+    });
+
+    currentPrice = endOfYearPrice;
+  }
+
+  const finalShares = currentShares;
+  const finalInvested = Math.round(cumInvested * 100) / 100;
+  const finalCorpus = yearBreakdown[yearBreakdown.length - 1]?.corpusValue || 0;
+  const wealthGain = Math.round((finalCorpus - finalInvested) * 100) / 100;
+
+  // Effective CAGR
+  let cagr = 0;
+  if (finalInvested > 0 && horizonYears > 0) {
+    cagr = Math.round((Math.pow(finalCorpus / finalInvested, 1 / horizonYears) - 1) * 10000) / 100;
+  }
+
+  return {
+    yearBreakdown,
+    finalShares,
+    finalInvested,
+    finalCorpus,
+    totalDividends: Math.round(cumDividends * 100) / 100,
+    totalCharges: Math.round(cumCharges * 100) / 100,
+    wealthGain,
+    cagr,
+  };
+}
+

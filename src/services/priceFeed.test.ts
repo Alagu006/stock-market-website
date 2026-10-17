@@ -182,4 +182,108 @@ describe('Price Feed Service & Quality Checks', () => {
       expect(records.length).toBe(2);
     });
   });
+
+  describe('Stock Directory Deduplication', () => {
+    it('deduplicates new stock entries by symbol, bseCode, or ISIN', () => {
+      interface DirectoryEntry {
+        symbol: string;
+        bseCode?: string;
+        isin?: string;
+        name: string;
+      }
+
+      const directory: DirectoryEntry[] = [
+        { symbol: 'RELIANCE', bseCode: '500325', isin: 'INE002A01018', name: 'Reliance Industries Ltd' },
+        { symbol: 'TCS', bseCode: '532540', isin: 'INE467B01029', name: 'Tata Consultancy Services' },
+      ];
+
+      function tryAppendStock(newStock: DirectoryEntry): boolean {
+        const sym = newStock.symbol.trim().toUpperCase();
+        const bse = newStock.bseCode ? newStock.bseCode.trim() : '';
+        const isin = newStock.isin ? newStock.isin.trim().toUpperCase() : '';
+
+        const exists = directory.some((item) => {
+          const matchSym = sym && item.symbol.toUpperCase() === sym;
+          const matchBse = bse && item.bseCode && item.bseCode.trim() === bse;
+          const matchIsin = isin && item.isin && item.isin.toUpperCase() === isin;
+          return matchSym || matchBse || matchIsin;
+        });
+
+        if (exists) return false;
+        directory.push(newStock);
+        return true;
+      }
+
+      // Existing symbol (case-insensitive) -> should reject
+      expect(tryAppendStock({ symbol: 'reliance', name: 'Reliance Duplicate' })).toBe(false);
+
+      // Existing BSE code -> should reject
+      expect(tryAppendStock({ symbol: 'NEWREL', bseCode: '500325', name: 'Reliance by BSE' })).toBe(false);
+
+      // Existing ISIN -> should reject
+      expect(tryAppendStock({ symbol: 'TCSEXTRA', isin: 'INE467B01029', name: 'TCS by ISIN' })).toBe(false);
+
+      // Brand new stock -> should accept
+      expect(
+        tryAppendStock({ symbol: 'INFY', bseCode: '500209', isin: 'INE009A01021', name: 'Infosys Ltd' })
+      ).toBe(true);
+      expect(directory.length).toBe(3);
+    });
+  });
+
+  describe('BSE HTML Table Rows and Metrics Parsing', () => {
+    it('correctly parses BSE td.textsr and td.textvalue pairs', () => {
+      const sampleHtml = `
+        <div class="card-conatiner">
+          <table>
+            <tr><td class="textsr">Previous Close</td><td class="textvalue">2,950.40</td></tr>
+            <tr><td class="textsr">Open</td><td class="textvalue">2,960.00</td></tr>
+            <tr><td class="textsr">VWAP</td><td class="textvalue">2,955.20</td></tr>
+            <tr><td class="textsr">52 Wk High</td><td class="textvalue">3,200.00</td></tr>
+            <tr><td class="textsr">52 Wk Low</td><td class="textvalue">2,400.00</td></tr>
+            <tr><td class="textsr">Upper Price Band</td><td class="textvalue">3,245.00</td></tr>
+            <tr><td class="textsr">Lower Price Band</td><td class="textvalue">2,655.00</td></tr>
+            <tr><td class="textsr">TTQ (Lakh)</td><td class="textvalue">12.50</td></tr>
+            <tr><td class="textsr">Turnover (Cr.)</td><td class="textvalue">368.50</td></tr>
+            <tr><td class="textsr">2W Avg Qty (Lakh)</td><td class="textvalue">15.20</td></tr>
+            <tr><td class="textsr">Mcap Full (Cr.)</td><td class="textvalue">19,85,000.00</td></tr>
+            <tr><td class="textsr">Mcap FF (Cr.)</td><td class="textvalue">9,50,000.00</td></tr>
+            <tr><td class="textsr">EPS (TTM)</td><td class="textvalue">15.13/16.11</td></tr>
+            <tr><td class="textsr">CEPS (TTM)</td><td class="textvalue">16.30/17.48</td></tr>
+            <tr><td class="textsr">PE</td><td class="textvalue">17.38/16.33</td></tr>
+            <tr><td class="textsr">ROE / PB</td><td class="textvalue">25.99/4.52</td></tr>
+            <tr><td class="textsr">Face Value</td><td class="textvalue">10.00</td></tr>
+            <tr><td class="textsr">Index</td><td class="textvalue">S&amp;P BSE SENSEX</td></tr>
+            <tr><td class="textsr">Basic Industry</td><td class="textvalue">Refineries &amp; Marketing</td></tr>
+          </table>
+        </div>
+      `;
+
+      // Helper regex mirroring server/index.js parseBseTableRows
+      const regex = /<td[^>]*class=["']textsr["'][^>]*>([\s\S]*?)<\/td>\s*<td[^>]*class=["']textvalue["'][^>]*>([\s\S]*?)<\/td>/gi;
+      let match;
+      const parsed: Record<string, string> = {};
+      while ((match = regex.exec(sampleHtml)) !== null) {
+        const k = match[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
+        const v = match[2].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
+        if (k) parsed[k] = v;
+      }
+
+      expect(parsed['Previous Close']).toBe('2,950.40');
+      expect(parsed['VWAP']).toBe('2,955.20');
+      expect(parsed['EPS (TTM)']).toBe('15.13/16.11');
+      expect(parsed['ROE / PB']).toBe('25.99/4.52');
+      expect(parsed['Basic Industry']).toBe('Refineries & Marketing');
+
+      // Check ROE & PB splitting
+      const roePbParts = parsed['ROE / PB'].split('/').map((s) => parseFloat(s.trim()));
+      expect(roePbParts[0]).toBe(25.99); // ROE %
+      expect(roePbParts[1]).toBe(4.52); // PB multiple
+
+      // Check EPS splitting
+      const epsParts = parsed['EPS (TTM)'].split('/').map((s) => parseFloat(s.trim()));
+      expect(epsParts[0]).toBe(15.13); // Standalone EPS
+      expect(epsParts[1]).toBe(16.11); // Consolidated EPS
+    });
+  });
 });

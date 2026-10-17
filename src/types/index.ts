@@ -87,6 +87,20 @@ export interface Fundamentals {
   high52W?: number;
   low52W?: number;
   intrinsicValue?: number;
+  marginOfSafety?: number;
+  // BSE Specific Exchange Details
+  vwap?: number;
+  eps?: number;
+  epsStandalone?: number;
+  epsConsolidated?: number;
+  ceps?: number;
+  mcapFFCr?: number;
+  avgQty2WLakh?: number;
+  faceValue?: number;
+  basicIndustry?: string;
+  upperBand?: number;
+  lowerBand?: number;
+  bseIndex?: string;
   // Up to 5 years financial history
   financials5Y?: Array<{
     year: string;
@@ -104,6 +118,32 @@ export interface Fundamentals {
   lastUpdated: string;
 }
 
+export interface NSEChargesBreakdown {
+  turnover: number;
+  brokerage: number; // 0.5%
+  stt: number; // 0.1% Buy and Sell delivery
+  exchangeCharges: number; // 0.00297%
+  sebiFee: number; // 0.0001%
+  stampDuty: number; // 0.015% on Buy, 0% on Sell
+  gst: number; // 18% on (Brokerage + Exchange Charges + SEBI Fee)
+  totalCharges: number;
+  netTotal: number;
+}
+
+export interface StockEdgeNewsItem {
+  date: string;
+  time: string;
+  category: string;
+  headline: string;
+  url?: string;
+}
+
+export interface StockEdgeNewsResponse {
+  symbol: string;
+  lastUpdated: string;
+  items: StockEdgeNewsItem[];
+}
+
 export interface LiveQuote {
   symbol: string;
   shortName: string;
@@ -118,8 +158,22 @@ export interface LiveQuote {
   pe?: number | null;
   forwardPE?: number | null;
   dividendYield?: number | null;
+  latestDividend?: { amount: number; date: string } | null;
   marketCap?: number | null;
   currency?: string;
+  bseData?: {
+    vwap?: number;
+    epsStandalone?: number;
+    epsConsolidated?: number;
+    ceps?: number;
+    mcapFFCr?: number;
+    avgQty2WLakh?: number;
+    faceValue?: number;
+    basicIndustry?: string;
+    upperBand?: number;
+    lowerBand?: number;
+    index?: string;
+  };
   timestamp: string;
 }
 

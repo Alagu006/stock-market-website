@@ -588,6 +588,7 @@ export function App() {
             corporateActions={corporateActions}
             costMethod={costMethod}
             searchQuery=""
+            fundamentalsList={fundamentalsList}
             onOpenPriceUpdate={(stockId) => setPriceUpdateStockId(stockId)}
             onOpenAddTx={(stockId) => handlePreFillBuy(stockId)}
             onOpenStockMaster={() => setIsStockMasterOpen(true)}
@@ -681,7 +682,13 @@ export function App() {
 
         {/* Phase 5: Compounding Simulator */}
         {activeTab === 'simulator' && (
-          <SimulatorView currentPortfolioValue={portfolioKPIs.currentValue} />
+          <SimulatorView
+            currentPortfolioValue={portfolioKPIs.currentValue}
+            stocks={stocks}
+            fundamentalsList={fundamentalsList}
+            holdings={allHoldings}
+            priceRecords={priceRecords}
+          />
         )}
 
         {/* Phase 2: Import / Export Center */}

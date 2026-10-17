@@ -6,10 +6,18 @@ import {
   Loader2,
   Check,
   BookOpen,
+  Coins,
 } from 'lucide-react';
 import stocksDirectory from '../data/stocks-directory.json';
-import { searchLiveSymbols, fetchLiveQuotes, getYahooSymbolForExchange } from '../services/priceFeed';
-import type { Stock } from '../types';
+import {
+  searchLiveSymbols,
+  fetchLiveQuotes,
+  getYahooSymbolForExchange,
+  addStockToRemoteDirectory,
+} from '../services/priceFeed';
+import { db } from '../db';
+import type { Stock, LiveQuote } from '../types';
+import { formatINR } from '../utils/formatters';
 
 interface SearchResultItem {
   symbol: string;
@@ -41,6 +49,10 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
   const [selectedStockForImport, setSelectedStockForImport] = useState<SearchResultItem | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [importSuccessSymbol, setImportSuccessSymbol] = useState<string | null>(null);
+
+  // Live quotes and dividends for search results
+  const [resultQuotes, setResultQuotes] = useState<Map<string, LiveQuote>>(new Map());
+  const [activeDividendPopoverSym, setActiveDividendPopoverSym] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -117,11 +129,33 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
     return bundledMatches.length > 0 ? bundledMatches : liveResults;
   }, [bundledMatches, liveResults]);
 
+  // Fetch live quotes (including CMP and latest dividend info) for results
+  useEffect(() => {
+    if (combinedResults.length === 0) return;
+    let isCurrent = true;
+
+    const symbols = combinedResults.map((r) => getYahooSymbolForExchange(r, 'NSE'));
+    fetchLiveQuotes(symbols).then((quotes) => {
+      if (!isCurrent) return;
+      const map = new Map<string, LiveQuote>();
+      quotes.forEach((q) => {
+        const clean = q.symbol.replace(/\.(NS|BO)$/i, '').toUpperCase();
+        map.set(clean, q);
+      });
+      setResultQuotes(map);
+    });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [combinedResults]);
+
   // Close dropdown when clicked outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setIsOpen(false);
+        setActiveDividendPopoverSym(null);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -146,10 +180,20 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
       }
     } else if (e.key === 'Escape') {
       setIsOpen(false);
+      setActiveDividendPopoverSym(null);
     }
   };
 
-  const handleSelectResult = (item: SearchResultItem) => {
+  const handleSelectResult = async (item: SearchResultItem) => {
+    // Task 4: Auto-add to directory on server and local DB
+    addStockToRemoteDirectory({
+      nseSymbol: item.symbol,
+      bseCode: item.bseCode,
+      name: item.name,
+      sector: item.sector,
+      marketCapCategory: item.marketCapCategory,
+    }).catch(() => {});
+
     const existing = existingSymbolsMap.get(item.symbol.toUpperCase());
     if (existing && existing.id && onNavigateToStock) {
       onNavigateToStock(existing.id);
@@ -165,6 +209,32 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
     setIsImporting(true);
 
     try {
+      // Task 4: Auto-add to backend stocks-directory.json and IndexedDB
+      await addStockToRemoteDirectory({
+        nseSymbol: selectedStockForImport.symbol,
+        bseCode: selectedStockForImport.bseCode,
+        name: selectedStockForImport.name,
+        sector: selectedStockForImport.sector,
+        marketCapCategory: selectedStockForImport.marketCapCategory,
+      });
+
+      // Also ensure stock is persisted into IndexedDB `stocks` table
+      try {
+        const existingInDb = await db.stocks.where('symbol').equals(selectedStockForImport.symbol).first();
+        if (!existingInDb) {
+          await db.stocks.add({
+            symbol: selectedStockForImport.symbol,
+            bseCode: selectedStockForImport.bseCode || '000000',
+            name: selectedStockForImport.name,
+            sector: selectedStockForImport.sector || 'Diversified',
+            marketCapCategory: (selectedStockForImport.marketCapCategory as any) || 'Mid Cap',
+            createdAt: new Date().toISOString(),
+          });
+        }
+      } catch (e) {
+        // Ignored if already added
+      }
+
       // Fetch live quote for initial price
       const yahooSym = getYahooSymbolForExchange(selectedStockForImport, 'NSE');
       const quotes = await fetchLiveQuotes([yahooSym]);
@@ -218,7 +288,7 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
           <button
             type="button"
             onClick={onOpenDirectoryModal}
-            className="p-1 rounded text-slate-400 hover:text-emerald-400 hover:bg-slate-800 transition-colors"
+            className="p-1 rounded text-slate-400 hover:text-emerald-400 hover:bg-slate-800 transition-colors cursor-pointer"
             title="Browse Master Stock Directory"
           >
             <BookOpen className="w-3.5 h-3.5" />
@@ -228,8 +298,9 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
               onClick={() => {
                 setQuery('');
                 setIsOpen(false);
+                setActiveDividendPopoverSym(null);
               }}
-              className="text-xs text-slate-400 hover:text-slate-200 px-1"
+              className="text-xs text-slate-400 hover:text-slate-200 px-1 cursor-pointer"
             >
               ✕
             </button>
@@ -270,6 +341,7 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
           {combinedResults.map((item, idx) => {
             const isAlreadyAdded = existingSymbolsMap.has(item.symbol.toUpperCase());
             const isSelected = selectedIndex === idx;
+            const quote = resultQuotes.get(item.symbol.toUpperCase());
 
             return (
               <div
@@ -284,23 +356,49 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
                     <Building2 className="w-3.5 h-3.5 text-emerald-400" />
                   </div>
                   <div className="truncate">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <span className="font-bold text-white text-xs">{item.symbol}</span>
                       {item.bseCode && (
                         <span className="text-[10px] font-mono text-slate-400 bg-slate-900 px-1 rounded border border-slate-800">
                           {item.bseCode}
                         </span>
                       )}
-                      <span className="text-[9px] font-bold px-1 rounded bg-teal-500/10 text-teal-300 border border-teal-500/20">
-                        NSE/BSE
-                      </span>
+
+                      {/* TASK 2: Prominently badged Dividend Yield & Latest Dividend in Search Dropdown */}
+                      {quote && (quote.dividendYield || quote.latestDividend) && (
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveDividendPopoverSym(
+                              activeDividendPopoverSym === item.symbol ? null : item.symbol
+                            );
+                          }}
+                          className="inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 transition-all"
+                          title="Click to view dividend details"
+                        >
+                          <Coins className="w-2.5 h-2.5 text-amber-400" />
+                          <span>
+                            {quote.dividendYield ? `${quote.dividendYield}% Yield` : ''}
+                            {quote.latestDividend
+                              ? ` • ₹${quote.latestDividend.amount}${
+                                  quote.latestDividend.date ? ` (Ex: ${quote.latestDividend.date})` : ''
+                                }`
+                              : ''}
+                          </span>
+                        </span>
+                      )}
                     </div>
-                    <p className="text-[11px] text-slate-400 truncate max-w-[240px]">{item.name}</p>
+                    <p className="text-[11px] text-slate-400 truncate max-w-[220px]">{item.name}</p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-[10px] text-slate-500 hidden sm:inline">{item.sector}</span>
+                <div className="flex items-center gap-2.5 shrink-0">
+                  {quote?.price ? (
+                    <span className="text-xs font-bold text-emerald-400 tabular-nums">
+                      {formatINR(quote.price)}
+                    </span>
+                  ) : null}
+
                   {isAlreadyAdded ? (
                     <span className="text-[10px] font-semibold text-emerald-400 flex items-center gap-0.5 bg-emerald-500/10 px-1.5 py-0.5 rounded">
                       <Check className="w-3 h-3" />
@@ -313,7 +411,7 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
                         e.stopPropagation();
                         setSelectedStockForImport(item);
                       }}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[10px] font-bold shadow-sm transition-all"
+                      className="flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[10px] font-bold shadow-sm transition-all cursor-pointer"
                     >
                       <PlusCircle className="w-3 h-3" />
                       <span>Import</span>
@@ -337,7 +435,7 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
               </h3>
               <button
                 onClick={() => setSelectedStockForImport(null)}
-                className="text-slate-400 hover:text-white text-xs"
+                className="text-slate-400 hover:text-white text-xs cursor-pointer"
               >
                 ✕
               </button>
@@ -368,10 +466,22 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
                   {selectedStockForImport.marketCapCategory}
                 </span>
               </div>
+
+              {/* Live quote preview if available */}
+              {resultQuotes.get(selectedStockForImport.symbol.toUpperCase()) && (
+                <div className="pt-2 mt-2 border-t border-slate-800/80 flex justify-between items-center text-xs">
+                  <span className="text-slate-400">Live Price (CMP):</span>
+                  <span className="font-bold text-emerald-400">
+                    {formatINR(
+                      resultQuotes.get(selectedStockForImport.symbol.toUpperCase())!.price
+                    )}
+                  </span>
+                </div>
+              )}
             </div>
 
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              Importing will automatically register this stock into your Stock Master and immediately fetch its live CMP, 52W high/low, P/E, and market cap from the live feed.
+              Importing will automatically register this stock into your Stock Master, add it to your synchronized stock directory, and immediately fetch live CMP, 52W high/low, and fundamentals.
             </p>
 
             <div className="flex items-center justify-end gap-2 pt-2">
@@ -379,7 +489,7 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
                 type="button"
                 onClick={() => setSelectedStockForImport(null)}
                 disabled={isImporting}
-                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg"
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg cursor-pointer"
               >
                 Cancel
               </button>
@@ -387,7 +497,7 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
                 type="button"
                 onClick={handleConfirmImport}
                 disabled={isImporting}
-                className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-xs font-bold rounded-lg shadow-sm"
+                className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-xs font-bold rounded-lg shadow-sm cursor-pointer"
               >
                 {isImporting ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />

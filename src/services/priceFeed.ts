@@ -1,4 +1,4 @@
-import type { Fundamentals, LiveQuote, MarketIndicesData, CorporateEventData } from '../types';
+import type { Fundamentals, LiveQuote, MarketIndicesData, CorporateEventData, StockEdgeNewsResponse } from '../types';
 
 const DEFAULT_PRODUCTION_API = 'https://stock-market-api-odq1.onrender.com';
 
@@ -198,6 +198,93 @@ export async function fetchCorporateEvents(symbol: string): Promise<CorporateEve
 }
 
 /**
+ * Task 1: Fetch enriched fundamentals from Proxy (BSE + Yahoo + Graham Intrinsic Value)
+ */
+export async function fetchStockFundamentals(
+  symbol: string,
+  bseCode?: string,
+  currentPrice?: number,
+  slug?: string
+): Promise<{
+  symbol: string;
+  bseCode?: string;
+  fundamentals: Partial<Fundamentals>;
+  bseData?: any;
+} | null> {
+  if (!symbol) return null;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const params = new URLSearchParams({
+      symbol: symbol.trim(),
+    });
+    if (bseCode) params.set('bseCode', bseCode.trim());
+    if (currentPrice) params.set('currentPrice', String(currentPrice));
+    if (slug) params.set('slug', slug.trim());
+
+    const res = await fetch(`${PROXY_BASE_URL}/api/fundamentals?${params.toString()}`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    console.warn(`[PriceFeed] Error fetching fundamentals for ${symbol}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Task 3: Fetch on-demand StockEdge news & updates
+ */
+export async function fetchStockEdgeNews(symbol: string): Promise<StockEdgeNewsResponse | null> {
+  if (!symbol) return null;
+  try {
+    const controller = new AbortController();
+    // 15s timeout to allow safe 5-10s server-side rate limit throttle
+    const timeout = setTimeout(() => controller.abort(), 18000);
+    const res = await fetch(
+      `${PROXY_BASE_URL}/api/stockedge-updates?symbol=${encodeURIComponent(symbol.trim())}`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timeout);
+
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    console.warn(`[PriceFeed] Error fetching StockEdge news for ${symbol}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Task 4: Auto-add searched stock to stocks-directory.json
+ */
+export async function addStockToRemoteDirectory(stockData: {
+  nseSymbol?: string;
+  symbol?: string;
+  bseCode?: string;
+  name: string;
+  isin?: string;
+  sector?: string;
+  marketCapCategory?: string;
+}): Promise<{ success: boolean; added: boolean; stock?: any } | null> {
+  try {
+    const res = await fetch(`${PROXY_BASE_URL}/api/directory/add`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(stockData),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    console.warn('[PriceFeed] Failed to add stock to remote directory:', err);
+    return null;
+  }
+}
+
+/**
  * Auto-fill empty fundamentals from live feed without overwriting user manual or Screener values.
  * Rule: Live feed ONLY populates fields if they are currently null, undefined, or 0.
  * Preserves Screener/Manual fields with metadata tagging.
@@ -206,7 +293,8 @@ export function mergeFeedFundamentals(
   existing: Fundamentals | undefined,
   feedQuote: LiveQuote | undefined,
   stockId: number,
-  symbol: string
+  symbol: string,
+  enriched?: Partial<Fundamentals>
 ): Fundamentals {
   const base: Fundamentals = existing || {
     stockId,
@@ -214,14 +302,35 @@ export function mergeFeedFundamentals(
     lastUpdated: new Date().toISOString().split('T')[0],
   };
 
-  if (!feedQuote) return base;
+  const high52W = base.high52W || feedQuote?.high52W || enriched?.high52W || undefined;
+  const low52W = base.low52W || feedQuote?.low52W || enriched?.low52W || undefined;
+  const stockPE = base.stockPE || feedQuote?.pe || enriched?.stockPE || undefined;
+  const dividendYield = base.dividendYield || feedQuote?.dividendYield || enriched?.dividendYield || undefined;
+  const marketCapCr = base.marketCapCr || feedQuote?.marketCap || enriched?.marketCapCr || undefined;
 
-  // Auto-fill empty fields only
-  const high52W = base.high52W || feedQuote.high52W || undefined;
-  const low52W = base.low52W || feedQuote.low52W || undefined;
-  const stockPE = base.stockPE || feedQuote.pe || undefined;
-  const dividendYield = base.dividendYield || feedQuote.dividendYield || undefined;
-  const marketCapCr = base.marketCapCr || feedQuote.marketCap || undefined;
+  // Additional Task 1 metrics
+  const roce = base.roce || enriched?.roce || undefined;
+  const roe = base.roe || enriched?.roe || undefined;
+  const debtToEquity = base.debtToEquity || enriched?.debtToEquity || undefined;
+  const evToEbitda = base.evToEbitda || enriched?.evToEbitda || undefined;
+  const pbRatio = base.pbRatio || enriched?.pbRatio || undefined;
+  const salesCagr10Y = base.salesCagr10Y || enriched?.salesCagr10Y || undefined;
+  const profitCagr10Y = base.profitCagr10Y || enriched?.profitCagr10Y || undefined;
+  const intrinsicValue = base.intrinsicValue || enriched?.intrinsicValue || undefined;
+  const marginOfSafety = base.marginOfSafety || enriched?.marginOfSafety || undefined;
+
+  // BSE specific metrics
+  const vwap = base.vwap || enriched?.vwap || feedQuote?.bseData?.vwap || undefined;
+  const epsStandalone = base.epsStandalone || enriched?.epsStandalone || feedQuote?.bseData?.epsStandalone || undefined;
+  const epsConsolidated = base.epsConsolidated || enriched?.epsConsolidated || feedQuote?.bseData?.epsConsolidated || undefined;
+  const ceps = base.ceps || enriched?.ceps || feedQuote?.bseData?.ceps || undefined;
+  const mcapFFCr = base.mcapFFCr || enriched?.mcapFFCr || feedQuote?.bseData?.mcapFFCr || undefined;
+  const avgQty2WLakh = base.avgQty2WLakh || enriched?.avgQty2WLakh || feedQuote?.bseData?.avgQty2WLakh || undefined;
+  const faceValue = base.faceValue || enriched?.faceValue || feedQuote?.bseData?.faceValue || undefined;
+  const basicIndustry = base.basicIndustry || enriched?.basicIndustry || feedQuote?.bseData?.basicIndustry || undefined;
+  const upperBand = base.upperBand || enriched?.upperBand || feedQuote?.bseData?.upperBand || undefined;
+  const lowerBand = base.lowerBand || enriched?.lowerBand || feedQuote?.bseData?.lowerBand || undefined;
+  const bseIndex = base.bseIndex || enriched?.bseIndex || feedQuote?.bseData?.index || undefined;
 
   return {
     ...base,
@@ -230,12 +339,41 @@ export function mergeFeedFundamentals(
     stockPE,
     dividendYield,
     marketCapCr,
+    roce,
+    roe,
+    debtToEquity,
+    evToEbitda,
+    pbRatio,
+    salesCagr10Y,
+    profitCagr10Y,
+    intrinsicValue,
+    marginOfSafety,
+    vwap,
+    epsStandalone,
+    epsConsolidated,
+    ceps,
+    mcapFFCr,
+    avgQty2WLakh,
+    faceValue,
+    basicIndustry,
+    upperBand,
+    lowerBand,
+    bseIndex,
     feedSourceTags: {
       high52W: base.high52W ? (base.feedSourceTags?.high52W || 'Manual / Screener') : 'Feed',
       low52W: base.low52W ? (base.feedSourceTags?.low52W || 'Manual / Screener') : 'Feed',
       stockPE: base.stockPE ? (base.feedSourceTags?.stockPE || 'Manual / Screener') : 'Feed',
       dividendYield: base.dividendYield ? (base.feedSourceTags?.dividendYield || 'Manual / Screener') : 'Feed',
       marketCapCr: base.marketCapCr ? (base.feedSourceTags?.marketCapCr || 'Manual / Screener') : 'Feed',
+      roe: base.roe ? (base.feedSourceTags?.roe || 'Manual / Screener') : 'Feed',
+      pbRatio: base.pbRatio ? (base.feedSourceTags?.pbRatio || 'Manual / Screener') : 'Feed',
+      roce: base.roce ? (base.feedSourceTags?.roce || 'Manual / Screener') : 'Feed',
+      debtToEquity: base.debtToEquity ? (base.feedSourceTags?.debtToEquity || 'Manual / Screener') : 'Feed',
+      evToEbitda: base.evToEbitda ? (base.feedSourceTags?.evToEbitda || 'Manual / Screener') : 'Feed',
+      salesCagr10Y: base.salesCagr10Y ? (base.feedSourceTags?.salesCagr10Y || 'Manual / Screener') : 'Feed',
+      profitCagr10Y: base.profitCagr10Y ? (base.feedSourceTags?.profitCagr10Y || 'Manual / Screener') : 'Feed',
+      intrinsicValue: base.intrinsicValue ? (base.feedSourceTags?.intrinsicValue || 'Manual / Screener') : 'Calculated',
+      marginOfSafety: base.marginOfSafety ? (base.feedSourceTags?.marginOfSafety || 'Manual / Screener') : 'Calculated',
     },
     lastUpdated: new Date().toISOString().split('T')[0],
   };

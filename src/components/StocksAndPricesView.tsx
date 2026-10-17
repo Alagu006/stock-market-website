@@ -7,8 +7,9 @@ import {
   AlertTriangle,
   Target,
   History,
+  Coins,
 } from 'lucide-react';
-import type { Stock, PriceRecord, CostMethod, Transaction, CorporateAction } from '../types';
+import type { Stock, PriceRecord, CostMethod, Transaction, CorporateAction, Fundamentals } from '../types';
 import { formatINR, formatDateDDMMYYYY, formatDaysAgo, isDateOlderThanDays } from '../utils/formatters';
 import { calculateStockPosition } from '../services/calculations';
 
@@ -19,6 +20,7 @@ interface StocksAndPricesViewProps {
   corporateActions: CorporateAction[];
   costMethod: CostMethod;
   searchQuery: string;
+  fundamentalsList?: Fundamentals[];
   onOpenPriceUpdate: (stockId: number) => void;
   onOpenAddTx: (stockId: number) => void;
   onOpenStockMaster: () => void;
@@ -33,6 +35,7 @@ export const StocksAndPricesView: React.FC<StocksAndPricesViewProps> = ({
   corporateActions,
   costMethod,
   searchQuery,
+  fundamentalsList = [],
   onOpenPriceUpdate,
   onOpenAddTx,
   onOpenStockMaster,
@@ -90,6 +93,7 @@ export const StocksAndPricesView: React.FC<StocksAndPricesViewProps> = ({
           const priceInfo = latestPriceMap.get(stock.id!);
           const isStale = !priceInfo || isDateOlderThanDays(priceInfo.date, 7);
           const pos = calculateStockPosition(stock.id!, transactions, corporateActions, costMethod);
+          const fund = fundamentalsList.find((f) => f.stockId === stock.id);
 
           return (
             <div
@@ -100,13 +104,22 @@ export const StocksAndPricesView: React.FC<StocksAndPricesViewProps> = ({
                 {/* Header */}
                 <div className="flex items-start justify-between mb-2">
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="font-extrabold text-base text-white tracking-wide">
                         {stock.symbol}
                       </span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 font-mono">
                         {stock.bseCode}
                       </span>
+                      {fund?.dividendYield && (
+                        <span
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                          title="Annual Dividend Yield"
+                        >
+                          <Coins className="w-2.5 h-2.5 text-amber-400" />
+                          <span>Div: {fund.dividendYield}%</span>
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-slate-400 truncate max-w-[220px]" title={stock.name}>
                       {stock.name}

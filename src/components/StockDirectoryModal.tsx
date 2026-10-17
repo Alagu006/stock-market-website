@@ -8,6 +8,7 @@ import {
   Check,
 } from 'lucide-react';
 import stocksDirectory from '../data/stocks-directory.json';
+import { addStockToRemoteDirectory } from '../services/priceFeed';
 import type { Stock } from '../types';
 
 interface StockDirectoryModalProps {
@@ -62,6 +63,15 @@ export const StockDirectoryModal: React.FC<StockDirectoryModalProps> = ({
   if (!isOpen) return null;
 
   const handleImport = async (item: (typeof stocksDirectory)[0]) => {
+    addStockToRemoteDirectory({
+      nseSymbol: item.symbol,
+      bseCode: item.bseCode,
+      name: item.name,
+      sector: item.sector,
+      marketCapCategory: item.marketCapCategory,
+      isin: item.isin,
+    }).catch(() => {});
+
     await onImportStock({
       symbol: item.symbol,
       bseCode: item.bseCode,

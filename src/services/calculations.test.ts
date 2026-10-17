@@ -11,6 +11,12 @@ import {
   simulateSIPAndLumpSum,
   generateProsAndCons,
   getPassiveHighlights,
+  calculateNSECharges,
+  parseBseRoePb,
+  parseBseEps,
+  calculateIntrinsicValue,
+  calculateMarginOfSafety,
+  simulateStockCompounding,
 } from './calculations';
 import type { Transaction, CorporateAction, Stock, Fundamentals } from '../types';
 
@@ -331,6 +337,116 @@ describe('Dalal Diary\'s Core Calculations Engine', () => {
 
     const prosCons = generateProsAndCons(fund, 3500, 3600);
     expect(prosCons.pros.length).toBeGreaterThan(0);
+  });
+
+  describe('NSE 0.5% Brokerage & Statutory Delivery Charges', () => {
+    it('calculates exact charges breakdown for a BUY delivery transaction', () => {
+      // 100 shares @ ₹1000 = ₹100,000 turnover
+      const charges = calculateNSECharges('BUY', 100, 1000);
+
+      expect(charges.turnover).toBe(100000);
+      expect(charges.brokerage).toBe(500); // 0.5%
+      expect(charges.stt).toBe(100); // 0.1%
+      expect(charges.exchangeCharges).toBe(2.97); // 0.00297%
+      expect(charges.sebiFee).toBe(0.1); // 0.0001%
+      expect(charges.stampDuty).toBe(15); // 0.015% on BUY
+      expect(charges.gst).toBe(90.55); // 18% on (500 + 2.97 + 0.1)
+      expect(charges.totalCharges).toBe(708.62);
+      expect(charges.netTotal).toBe(100708.62);
+    });
+
+    it('calculates exact charges breakdown for a SELL delivery transaction (0% stamp duty)', () => {
+      // 100 shares @ ₹1000 = ₹100,000 turnover
+      const charges = calculateNSECharges('SELL', 100, 1000);
+
+      expect(charges.turnover).toBe(100000);
+      expect(charges.brokerage).toBe(500);
+      expect(charges.stt).toBe(100);
+      expect(charges.stampDuty).toBe(0); // 0% on SELL
+      expect(charges.totalCharges).toBe(693.62);
+      expect(charges.netTotal).toBe(99306.38);
+    });
+  });
+
+  describe('BSE ROE / PB and EPS Parsing', () => {
+    it('parses BSE slash-separated ROE and PB strings correctly', () => {
+      const parsed = parseBseRoePb('25.99/4.52');
+      expect(parsed.roe).toBe(25.99);
+      expect(parsed.pbRatio).toBe(4.52);
+
+      const parsedPct = parseBseRoePb('18.5%/3.2');
+      expect(parsedPct.roe).toBe(18.5);
+      expect(parsedPct.pbRatio).toBe(3.2);
+    });
+
+    it('parses BSE standalone and consolidated EPS correctly', () => {
+      const parsed = parseBseEps('15.13/16.11');
+      expect(parsed.standalone).toBe(15.13);
+      expect(parsed.consolidated).toBe(16.11);
+      expect(parsed.primaryEps).toBe(16.11);
+
+      const single = parseBseEps('22.50');
+      expect(single.standalone).toBe(22.50);
+      expect(single.primaryEps).toBe(22.50);
+    });
+  });
+
+  describe('Graham Intrinsic Value and Margin of Safety', () => {
+    it('calculates Graham Number intrinsic value: sqrt(22.5 * EPS * BookValue)', () => {
+      // EPS = 20, BookValue = 500
+      // 22.5 * 20 * 500 = 225,000 -> sqrt = 474.34
+      const iv = calculateIntrinsicValue(20, 500);
+      expect(iv).toBe(474.34);
+    });
+
+    it('calculates Margin of Safety (%) correctly', () => {
+      // Intrinsic Value = 1000, CMP = 750 -> 25% discount
+      const mos = calculateMarginOfSafety(1000, 750);
+      expect(mos).toBe(25);
+
+      // Intrinsic Value = 1000, CMP = 1200 -> -20% premium
+      const mosPrem = calculateMarginOfSafety(1000, 1200);
+      expect(mosPrem).toBe(-20);
+    });
+  });
+
+  describe('Stock-Specific Long-Term Compounding Simulation', () => {
+    it('simulates lump sum with dividend reinvestment (DRIP)', () => {
+      const res = simulateStockCompounding({
+        mode: 'lumpSum',
+        initialShares: 100,
+        initialPrice: 1000,
+        expectedCagrPct: 15,
+        dividendYieldPct: 2,
+        drip: true,
+        horizonYears: 5,
+      });
+
+      expect(res.yearBreakdown).toHaveLength(5);
+      expect(res.finalShares).toBeGreaterThan(100); // Shares accumulated via DRIP
+      expect(res.finalCorpus).toBeGreaterThan(res.finalInvested);
+      expect(res.totalDividends).toBeGreaterThan(0);
+      expect(res.cagr).toBeGreaterThan(0);
+    });
+
+    it('simulates periodic accumulation with NSE statutory brokerage deductions', () => {
+      const res = simulateStockCompounding({
+        mode: 'accumulation',
+        initialShares: 10,
+        initialPrice: 500,
+        expectedCagrPct: 12,
+        dividendYieldPct: 1.5,
+        drip: true,
+        horizonYears: 3,
+        accumulationType: 'shares',
+        periodicShares: 2,
+        frequencyPerYear: 12, // 2 shares/month = 24 shares/year
+      });
+
+      expect(res.yearBreakdown).toHaveLength(3);
+      expect(res.finalShares).toBeGreaterThan(70);
+      expect(res.totalCharges).toBeGreaterThan(0); // Brokerage & STT deducted
+    });
   });
 });
 

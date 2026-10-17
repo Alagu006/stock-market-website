@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, AlertCircle, Calculator } from 'lucide-react';
+import { X, AlertCircle, Calculator, ShieldCheck, RefreshCw } from 'lucide-react';
 import type { Stock, Transaction, CorporateAction, PriceRecord, CostMethod, TransactionType } from '../types';
-import { calculateLivePreview, validateSellQuantity } from '../services/calculations';
+import { calculateLivePreview, validateSellQuantity, calculateNSECharges } from '../services/calculations';
+import { addStockToRemoteDirectory } from '../services/priceFeed';
 import { formatINR, formatPercent } from '../utils/formatters';
 
 interface AddTransactionModalProps {
@@ -39,9 +40,28 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
   const [quantity, setQuantity] = useState<string>(initialQuantity ? String(initialQuantity) : '');
   const [price, setPrice] = useState<string>(initialPrice ? String(initialPrice) : '');
   const [charges, setCharges] = useState<string>('0');
+  const [isManualChargesOverride, setIsManualChargesOverride] = useState(false);
   const [note, setNote] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Auto-calculate NSE brokerage & statutory charges
+  const nseCharges = useMemo(() => {
+    const q = Number(quantity) || 0;
+    const p = Number(price) || 0;
+    return calculateNSECharges(type, q, p);
+  }, [type, quantity, price]);
+
+  // Sync charges with auto-calculated charges unless manually overridden
+  useEffect(() => {
+    if (!isManualChargesOverride) {
+      if (nseCharges.totalCharges > 0) {
+        setCharges(String(nseCharges.totalCharges));
+      } else if (Number(quantity) === 0 || Number(price) === 0) {
+        setCharges('0');
+      }
+    }
+  }, [nseCharges, isManualChargesOverride, quantity, price]);
 
   // Synchronize when initial values change
   useEffect(() => {
@@ -118,6 +138,16 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
 
     try {
       setIsSubmitting(true);
+      if (selectedStock) {
+        addStockToRemoteDirectory({
+          nseSymbol: selectedStock.symbol,
+          bseCode: selectedStock.bseCode,
+          name: selectedStock.name,
+          sector: selectedStock.sector,
+          marketCapCategory: selectedStock.marketCapCategory,
+        }).catch(() => {});
+      }
+
       await onAddTransaction({
         stockId: Number(stockId),
         symbol: selectedStock?.symbol || '',
@@ -268,16 +298,35 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider">
-                Brokerage & Charges (₹)
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                  Brokerage & Charges (₹)
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !isManualChargesOverride;
+                    setIsManualChargesOverride(next);
+                    if (!next) {
+                      setCharges(String(nseCharges.totalCharges));
+                    }
+                  }}
+                  className="text-[10px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer font-medium"
+                >
+                  <RefreshCw className="w-2.5 h-2.5" />
+                  <span>{isManualChargesOverride ? 'Enable Auto-Calc' : 'Manual Override'}</span>
+                </button>
+              </div>
               <input
                 type="number"
                 min="0"
                 step="0.5"
                 value={charges}
-                onChange={(e) => setCharges(e.target.value)}
-                placeholder="STT, GST, etc."
+                onChange={(e) => {
+                  setCharges(e.target.value);
+                  setIsManualChargesOverride(true);
+                }}
+                placeholder="Auto-calculated (0.5% + STT + GST)"
                 className="w-full px-3 py-2 bg-slate-900 text-sm text-slate-200 rounded-xl border border-slate-700 focus:outline-none focus:border-emerald-500 tabular-nums"
               />
             </div>
@@ -295,6 +344,52 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
               />
             </div>
           </div>
+
+          {/* TASK 5: Live NSE Brokerage & Statutory Charges Breakdown Card */}
+          {nseCharges.turnover > 0 && (
+            <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2 text-xs">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                <span className="font-bold text-slate-300 flex items-center gap-1.5 text-[11px] uppercase tracking-wider">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>NSE Delivery Charges Breakdown</span>
+                </span>
+                <span className="text-[10px] text-emerald-400 font-mono">
+                  Turnover: {formatINR(nseCharges.turnover)}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-slate-400 pt-1">
+                <div>
+                  <span className="block text-slate-500">Brokerage (0.5%):</span>
+                  <span className="font-semibold text-white">₹{nseCharges.brokerage}</span>
+                </div>
+                <div>
+                  <span className="block text-slate-500">STT (0.1%):</span>
+                  <span className="font-semibold text-white">₹{nseCharges.stt}</span>
+                </div>
+                <div>
+                  <span className="block text-slate-500">Exch + SEBI + Stamp:</span>
+                  <span className="font-semibold text-white">
+                    ₹{(nseCharges.exchangeCharges + nseCharges.sebiFee + nseCharges.stampDuty).toFixed(2)}
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-slate-500">GST (18%):</span>
+                  <span className="font-semibold text-white">₹{nseCharges.gst}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between border-t border-slate-800/80 pt-2 font-bold">
+                <span className="text-slate-400">
+                  Total Statutory Charges:{' '}
+                  <strong className="text-slate-200">₹{nseCharges.totalCharges}</strong>
+                </span>
+                <span className="text-emerald-400">
+                  Net {type === 'BUY' ? 'Payable' : 'Receivable'}: {formatINR(nseCharges.netTotal)}
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* LIVE 4-CARD PREVIEW */}
           {livePreview && (
