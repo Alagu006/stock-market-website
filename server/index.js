@@ -17,17 +17,7 @@ if (frontendOrigin) {
   allowedOrigins.push(frontendOrigin.replace(/\/$/, ''));
 }
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-      const isAllowed = allowedOrigins.some((allowed) => allowed === origin || origin.endsWith('.onrender.com'));
-      callback(null, isAllowed);
-    },
-    methods: ['GET', 'OPTIONS'],
-    credentials: true,
-  })
-);
+app.use(cors());
 
 app.use(express.json());
 
