@@ -577,7 +577,7 @@ export function calculateAllHoldings(
     const priceInfo = priceMap.get(stock.id);
     const currentPrice = priceInfo
       ? priceInfo.latestPrice
-      : (stock.targetBuyPrice || stock.vwap || pos.averageBuyPrice);
+      : (stock.vwap || pos.averageBuyPrice || stock.targetBuyPrice || 0);
     const lastPriceDate = priceInfo ? priceInfo.latestDate : null;
     const isPriceStale = !priceInfo || isDateOlderThanDays(lastPriceDate, 7);
 
@@ -586,7 +586,7 @@ export function calculateAllHoldings(
     const unrealizedPnLPercent = pos.totalCostBasis > 0 ? (unrealizedPnL / pos.totalCostBasis) * 100 : 0;
 
     const fund = fundMap.get(stock.id);
-    const expectedDiv = stock.expectedDividendPerShare || 0;
+    const expectedDiv = stock.expectedDividendPerShare || stock.latestDividendAmount || 0;
     const annualDividendIncome = pos.quantity * expectedDiv;
     const yieldOnCost = pos.totalCostBasis > 0 ? (annualDividendIncome / pos.totalCostBasis) * 100 : 0;
 
@@ -611,8 +611,8 @@ export function calculateAllHoldings(
       realizedPnL: pos.realizedPnL,
       annualDividendIncome,
       yieldOnCost,
-      roce: fund?.roce ?? null,
-      pe: fund?.stockPE ?? null,
+      roce: fund?.roce ?? stock.roce ?? null,
+      pe: fund?.stockPE ?? stock.peConsolidated ?? stock.peStandalone ?? null,
       lotsCount: pos.activeLotsCount,
       previousPrice: priceInfo?.prevPrice,
       priceChange,
@@ -746,6 +746,7 @@ export function calculateXIRR(cashflows: Array<{ date: string; amount: number }>
 
   // Sort cashflows chronologically
   const sorted = [...validFlows].sort((a, b) => a.date.localeCompare(b.date));
+  if (sorted[0].date === sorted[sorted.length - 1].date) return null;
   const t0 = new Date(sorted[0].date).getTime();
 
   const getYears = (dateStr: string) => {
@@ -776,7 +777,7 @@ export function calculateXIRR(cashflows: Array<{ date: string; amount: number }>
     const value = npv(rate);
     const dVal = derivativeNpv(rate);
 
-    if (Math.abs(dVal) < 1e-10) break;
+    if (Math.abs(dVal) < 1e-10) return null;
 
     const nextRate = rate - value / dVal;
     if (Math.abs(nextRate - rate) < tolerance) {
@@ -861,9 +862,10 @@ export function classifyTaxLots(
           const term: 'STCG' | 'LTCG' = holdingDays <= 365 ? 'STCG' : 'LTCG';
           const gainOrLoss = taken * (tx.effectivePricePerShare - lot.effectivePrice);
 
-          // Determine FY
-          const month = sellDate.getMonth() + 1;
-          const year = sellDate.getFullYear();
+          // Determine FY without timezone drift
+          const [yStr, mStr] = tx.date.split('-');
+          const year = parseInt(yStr, 10);
+          const month = parseInt(mStr, 10);
           const fy = month >= 4 ? `FY ${year}-${String(year + 1).slice(-2)}` : `FY ${year - 1}-${String(year).slice(-2)}`;
 
           taxRecords.push({
@@ -1064,10 +1066,11 @@ export function calculateStockXIRR(
   const cashflows: Array<{ date: string; amount: number }> = [];
 
   for (const t of stockTxs) {
+    const charges = t.totalCharges !== undefined ? t.totalCharges : (t.charges || 0);
     if (t.type === 'BUY') {
-      cashflows.push({ date: t.date, amount: -(t.quantity * t.price + (t.charges || 0)) });
+      cashflows.push({ date: t.date, amount: -(t.quantity * t.price + charges) });
     } else {
-      cashflows.push({ date: t.date, amount: +(t.quantity * t.price - (t.charges || 0)) });
+      cashflows.push({ date: t.date, amount: +(t.quantity * t.price - charges) });
     }
   }
 
@@ -1098,10 +1101,11 @@ export function calculatePortfolioXIRR(
   const cashflows: Array<{ date: string; amount: number }> = [];
 
   for (const t of transactions) {
+    const charges = t.totalCharges !== undefined ? t.totalCharges : (t.charges || 0);
     if (t.type === 'BUY') {
-      cashflows.push({ date: t.date, amount: -(t.quantity * t.price + (t.charges || 0)) });
+      cashflows.push({ date: t.date, amount: -(t.quantity * t.price + charges) });
     } else {
-      cashflows.push({ date: t.date, amount: +(t.quantity * t.price - (t.charges || 0)) });
+      cashflows.push({ date: t.date, amount: +(t.quantity * t.price - charges) });
     }
   }
 

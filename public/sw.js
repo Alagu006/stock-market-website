@@ -1,5 +1,5 @@
 // Dalal Diary - Offline Service Worker
-const CACHE_NAME = 'dalal-diary-cache-v1';
+const CACHE_NAME = 'dalal-diary-cache-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -35,14 +35,34 @@ self.addEventListener('fetch', (event) => {
   // Only handle GET requests and skip API requests for caching
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
-  if (url.pathname.startsWith('/api')) {
+  if (url.pathname.startsWith('/api') || url.hostname.includes('onrender.com') && url.pathname.includes('/api/')) {
     return;
   }
 
+  // Network-First for Navigation / HTML pages so fresh deployments are received immediately
+  if (event.request.mode === 'navigate' || event.request.headers.get('accept')?.includes('text/html')) {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const copy = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, copy);
+            });
+          }
+          return networkResponse;
+        })
+        .catch(() => {
+          return caches.match('/index.html') || caches.match('/');
+        })
+    );
+    return;
+  }
+
+  // Stale-while-revalidate for hashed static assets
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
       if (cachedResponse) {
-        // Return cached and refresh in background
         fetch(event.request)
           .then((networkResponse) => {
             if (networkResponse && networkResponse.status === 200) {
@@ -55,23 +75,16 @@ self.addEventListener('fetch', (event) => {
         return cachedResponse;
       }
 
-      return fetch(event.request)
-        .then((networkResponse) => {
-          if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
-            return networkResponse;
-          }
-          const responseToCache = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseToCache);
-          });
+      return fetch(event.request).then((networkResponse) => {
+        if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
           return networkResponse;
-        })
-        .catch(() => {
-          // If offline and navigating to a page, fallback to cached index.html
-          if (event.request.mode === 'navigate') {
-            return caches.match('/');
-          }
+        }
+        const responseToCache = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => {
+          cache.put(event.request, responseToCache);
         });
+        return networkResponse;
+      });
     })
   );
 });

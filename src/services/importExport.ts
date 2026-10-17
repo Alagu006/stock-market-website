@@ -59,7 +59,10 @@ export function normalizeDate(val: any): string | null {
   if (!val) return null;
 
   if (val instanceof Date && !isNaN(val.getTime())) {
-    return val.toISOString().split('T')[0];
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
   }
 
   const str = String(val).trim();
@@ -86,7 +89,10 @@ export function normalizeDate(val: any): string | null {
   // Try standard parse
   const parsed = new Date(str);
   if (!isNaN(parsed.getTime())) {
-    return parsed.toISOString().split('T')[0];
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
   }
 
   return null;
