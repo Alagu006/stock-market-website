@@ -185,6 +185,50 @@ export function formatYahooSymbol(sym) {
   return `${trimmed}.NS`;
 }
 
+// Root landing status page
+app.get('/', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Dalal Diary's Price Proxy API</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b0f17; color: #e2e8f0; padding: 40px 20px; line-height: 1.6; max-width: 680px; margin: 0 auto; }
+        .card { background: #111827; border: 1px solid #1e293b; border-radius: 16px; padding: 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        .badge { display: inline-block; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); color: #34d399; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; margin-bottom: 16px; }
+        h1 { margin: 0 0 12px; font-size: 24px; color: #f8fafc; }
+        p { color: #94a3b8; font-size: 14px; margin-top: 0; }
+        .endpoint-list { list-style: none; padding: 0; margin: 24px 0; }
+        .endpoint-list li { background: #0f172a; border: 1px solid #1e293b; padding: 12px 16px; border-radius: 8px; margin-bottom: 8px; font-family: monospace; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+        .endpoint-list a { color: #38bdf8; text-decoration: none; }
+        .endpoint-list a:hover { text-decoration: underline; }
+        .footer { font-size: 12px; color: #64748b; margin-top: 24px; text-align: center; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <span class="badge">● Online & Operational</span>
+        <h1>Dalal Diary's Price Proxy Server</h1>
+        <p>This is the backend price proxy service that delivers live NSE/BSE stock quotes, indices, and corporate actions to your <strong>Dalal Diary's</strong> portfolio tracker.</p>
+        
+        <ul class="endpoint-list">
+          <li><span>Health Check:</span> <a href="/health">/health</a></li>
+          <li><span>Live Indices:</span> <a href="/api/indices">/api/indices</a></li>
+          <li><span>Sample Quote:</span> <a href="/api/quote?symbols=RELIANCE.NS,TCS.NS">/api/quote?symbols=RELIANCE.NS,TCS.NS</a></li>
+        </ul>
+        
+        <p style="font-size: 13px; color: #cbd5e1; background: rgba(56, 189, 248, 0.1); border-left: 3px solid #38bdf8; padding: 10px 14px; border-radius: 4px;">
+          <strong>Note:</strong> To view your portfolio dashboard, open your <strong>Static Site</strong> URL in your Render dashboard (e.g. <code>stock-market-ui</code>).
+        </p>
+      </div>
+      <div class="footer">Dalal Diary's &bull; High-Performance Indian Equity Portfolio Tracker</div>
+    </body>
+    </html>
+  `);
+});
+
 // 1. Health check endpoint (for Render free-tier wakeup)
 app.get('/health', (req, res) => {
   res.json({
