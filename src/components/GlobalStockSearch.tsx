@@ -12,9 +12,9 @@ import stocksDirectory from '../data/stocks-directory.json';
 import {
   searchLiveSymbols,
   fetchLiveQuotes,
-  getYahooSymbolForExchange,
   addStockToRemoteDirectory,
   applyFeedToStock,
+  mergeFeedFundamentals,
 } from '../services/priceFeed';
 import { db } from '../db';
 import type { Stock, LiveQuote } from '../types';
@@ -118,14 +118,39 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
         ]);
 
         if (isMounted) {
-          const mappedFromRemote: SearchResultItem[] = remoteResults.map((r: any) => ({
-            symbol: r.cleanSymbol || r.symbol.replace(/\.(NS|BO)$/i, ''),
-            bseCode: r.bseCode || (r.exchange === 'BSE' ? r.cleanSymbol : ''),
-            name: r.name,
-            sector: r.sector || 'Diversified',
-            marketCapCategory: r.marketCapCategory || 'Mid Cap',
-            source: 'live',
-          }));
+          const mappedFromRemote: SearchResultItem[] = remoteResults.map((r: any) => {
+            const cleanSym = (r.cleanSymbol || r.symbol.replace(/\.(NS|BO)$/i, '')).toUpperCase();
+            if (r.price && r.price > 0) {
+              setResultQuotes((prev) => {
+                const next = new Map(prev);
+                next.set(cleanSym, {
+                  symbol: r.symbol,
+                  shortName: r.name || cleanSym,
+                  price: r.price,
+                  previousClose: r.previousClose || r.price,
+                  change: r.change || 0,
+                  changePercent: r.changePercent || 0,
+                  high52W: r.high52W || null,
+                  low52W: r.low52W || null,
+                  pe: r.pe || null,
+                  dividendYield: r.dividendYield || null,
+                  latestDividend: r.latestDividend || null,
+                  marketCap: null,
+                  currency: 'INR',
+                  timestamp: new Date().toISOString(),
+                });
+                return next;
+              });
+            }
+            return {
+              symbol: cleanSym,
+              bseCode: r.bseCode || (r.exchange === 'BSE' ? cleanSym : ''),
+              name: r.name,
+              sector: r.sector || 'Diversified',
+              marketCapCategory: r.marketCapCategory || 'Mid Cap',
+              source: 'live',
+            };
+          });
 
           const mappedFromDirectQuotes: SearchResultItem[] = [];
           for (const dq of directQuotes) {
@@ -205,14 +230,26 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
     if (combinedResults.length === 0) return;
     let isCurrent = true;
 
-    const symbols = combinedResults.map((r) => getYahooSymbolForExchange(r, 'NSE'));
-    fetchLiveQuotes(symbols).then((quotes) => {
+    const querySymbols: string[] = [];
+    for (const r of combinedResults) {
+      const sym = r.symbol.trim().toUpperCase();
+      querySymbols.push(`${sym}.NS`, `${sym}.BO`, sym);
+      if (r.bseCode && /^\d{6}$/.test(r.bseCode.trim())) {
+        querySymbols.push(r.bseCode.trim(), `${r.bseCode.trim()}.BO`);
+      }
+    }
+
+    fetchLiveQuotes(querySymbols).then((quotes) => {
       if (!isCurrent) return;
       setResultQuotes((prev) => {
         const next = new Map(prev);
         quotes.forEach((q) => {
           const clean = q.symbol.replace(/\.(NS|BO)$/i, '').toUpperCase();
           next.set(clean, q);
+          next.set(q.symbol.toUpperCase(), q);
+          if ((q as any).bseData?.scripCode) {
+            next.set(String((q as any).bseData.scripCode), q);
+          }
         });
         return next;
       });
@@ -298,6 +335,37 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
         if (quote) {
           const updated = applyFeedToStock(existingInDb, { quote });
           await db.stocks.put(updated);
+        }
+      }
+
+      // CRITICAL: Immediately persist CMP to db.priceRecords so CMP appears across all views
+      if (cmp > 0 && stockId > 0) {
+        const todayDate = new Date().toISOString().split('T')[0];
+        const existingPrice = await db.priceRecords
+          .where('stockId')
+          .equals(stockId)
+          .filter((p) => p.date === todayDate)
+          .first();
+
+        if (existingPrice && existingPrice.id) {
+          await db.priceRecords.update(existingPrice.id, {
+            price: cmp,
+            createdAt: new Date().toISOString(),
+          });
+        } else {
+          await db.priceRecords.add({
+            stockId,
+            symbol: item.symbol,
+            price: cmp,
+            date: todayDate,
+            createdAt: new Date().toISOString(),
+          });
+        }
+
+        if (quote) {
+          const existingFund = await db.fundamentals.where('stockId').equals(stockId).first();
+          const merged = mergeFeedFundamentals(existingFund, quote, stockId, item.symbol);
+          await db.fundamentals.put(merged);
         }
       }
     } catch (e) {

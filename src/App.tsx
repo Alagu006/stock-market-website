@@ -31,10 +31,9 @@ import {
   checkProxyHealth,
   fetchLiveMarketIndices,
   fetchLiveQuotes,
-  getYahooSymbolForExchange,
-  getFallbackYahooSymbol,
   isIndianMarketOpen,
   mergeFeedFundamentals,
+  applyFeedToStock,
 } from './services/priceFeed';
 import { Navbar, type ActiveTabType } from './components/Navbar';
 import { TopIndicesRibbon } from './components/TopIndicesRibbon';
@@ -160,11 +159,10 @@ export function App() {
 
   // 2. Fetch Live Quotes & Indices Function with Daily Snapshot Deduplication
   const syncLivePrices = useCallback(async () => {
-    if (stocks.length === 0) return;
     setIsSyncing(true);
 
     try {
-      // A. Fetch Indices
+      // A. Fetch Indices (Always fetch regardless of portfolio stock count)
       const indicesData = await fetchLiveMarketIndices();
       if (indicesData) {
         setIndices(indicesData);
@@ -190,33 +188,45 @@ export function App() {
         }
       }
 
-      // B. Build symbols list for all stocks held or watchlisted
+      if (stocks.length === 0) return;
+
+      // B. Build symbols list for all stocks held or watchlisted (NSE, BSE, and clean codes)
       const targetSymbols: string[] = [];
-      const stockLookup = new Map<string, Stock>();
 
       for (const st of stocks) {
-        const primaryYahoo = getYahooSymbolForExchange(st, activeExchange);
-        const fallbackYahoo = getFallbackYahooSymbol(st, activeExchange);
-        targetSymbols.push(primaryYahoo, fallbackYahoo);
-        stockLookup.set(primaryYahoo, st);
-        stockLookup.set(fallbackYahoo, st);
+        const sym = st.symbol.trim().toUpperCase();
+        targetSymbols.push(`${sym}.NS`, `${sym}.BO`, sym);
+        if (st.bseCode && /^\d{6}$/.test(st.bseCode.trim())) {
+          targetSymbols.push(st.bseCode.trim(), `${st.bseCode.trim()}.BO`);
+        }
       }
 
       const quotes = await fetchLiveQuotes(targetSymbols);
       const quotesMap = new Map<string, LiveQuote>();
-      quotes.forEach((q) => quotesMap.set(q.symbol, q));
+      quotes.forEach((q) => {
+        quotesMap.set(q.symbol.toUpperCase(), q);
+        const clean = q.symbol.replace(/\.(NS|BO)$/i, '').toUpperCase();
+        quotesMap.set(clean, q);
+        if ((q as any).bseData?.scripCode) {
+          quotesMap.set(String((q as any).bseData.scripCode), q);
+        }
+      });
 
       // C. Update Prices in DB (Deduplicating at most one snapshot per stock per day)
       const today = new Date().toISOString().split('T')[0];
       const nowISO = new Date().toISOString();
 
-      await db.transaction('rw', [db.priceRecords, db.fundamentals], async () => {
+      await db.transaction('rw', [db.stocks, db.priceRecords, db.fundamentals], async () => {
         for (const st of stocks) {
           if (!st.id) continue;
-          const primaryYahoo = getYahooSymbolForExchange(st, activeExchange);
-          const fallbackYahoo = getFallbackYahooSymbol(st, activeExchange);
+          const cleanSym = st.symbol.trim().toUpperCase();
+          const quote =
+            quotesMap.get(activeExchange === 'NSE' ? `${cleanSym}.NS` : `${cleanSym}.BO`) ||
+            quotesMap.get(activeExchange === 'NSE' ? `${cleanSym}.BO` : `${cleanSym}.NS`) ||
+            quotesMap.get(cleanSym) ||
+            (st.bseCode ? quotesMap.get(st.bseCode.trim()) : undefined) ||
+            (st.bseCode ? quotesMap.get(`${st.bseCode.trim()}.BO`) : undefined);
 
-          const quote = quotesMap.get(primaryYahoo) || quotesMap.get(fallbackYahoo);
           if (quote && quote.price > 0) {
             // Deduplicate: check if today's price already exists for this stock
             const existingTodayRecord = await db.priceRecords
@@ -239,6 +249,10 @@ export function App() {
                 createdAt: nowISO,
               });
             }
+
+            // Keep stock live quote fields in sync
+            const updatedStock = applyFeedToStock(st, { quote }, stocks);
+            await db.stocks.put(updatedStock);
 
             // Auto-fill empty fundamentals without overwriting user manual/Screener values
             const existingFund = await db.fundamentals

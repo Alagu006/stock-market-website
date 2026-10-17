@@ -28,6 +28,7 @@ import {
   fetchStockEdgeNews,
   fetchCorporateEvents,
 } from '../services/priceFeed';
+import { db } from '../db';
 
 interface FundamentalXRayViewProps {
   stocks: Stock[];
@@ -106,9 +107,14 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
   }, [priceRecords, selectedStock]);
 
   const latestPrice = useMemo(() => {
-    if (stockPrices.length === 0) return selectedHolding?.currentPrice || 0;
-    return stockPrices[stockPrices.length - 1].price;
-  }, [stockPrices, selectedHolding]);
+    if (stockPrices.length > 0) return stockPrices[stockPrices.length - 1].price;
+    if (selectedHolding?.currentPrice && selectedHolding.currentPrice > 0) return selectedHolding.currentPrice;
+    if (bseData?.ltp && bseData.ltp > 0) return bseData.ltp;
+    if (bseData?.previousClose && bseData.previousClose > 0) return bseData.previousClose;
+    if (selectedStock?.vwap && selectedStock.vwap > 0) return selectedStock.vwap;
+    if (selectedStock?.targetBuyPrice && selectedStock.targetBuyPrice > 0) return selectedStock.targetBuyPrice;
+    return 0;
+  }, [stockPrices, selectedHolding, bseData, selectedStock]);
 
   // Sync thesis text
   useEffect(() => {
@@ -136,6 +142,29 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
         if (!isCurrent || !res) return;
         setEnrichedFund(res.fundamentals);
         setBseData(res.bseData);
+
+        // Auto-persist live BSE price into db.priceRecords if not already recorded today
+        const liveLtp = res.bseData?.ltp || res.bseData?.previousClose;
+        if (liveLtp && liveLtp > 0 && selectedStock.id) {
+          const todayDate = new Date().toISOString().split('T')[0];
+          db.priceRecords
+            .where('stockId')
+            .equals(selectedStock.id)
+            .filter((p: PriceRecord) => p.date === todayDate)
+            .first()
+            .then((existing: PriceRecord | undefined) => {
+              if (!existing && selectedStock.id) {
+                db.priceRecords.add({
+                  stockId: selectedStock.id,
+                  symbol: selectedStock.symbol,
+                  price: liveLtp,
+                  date: todayDate,
+                  createdAt: new Date().toISOString(),
+                });
+              }
+            })
+            .catch(() => {});
+        }
       })
       .catch(() => {})
       .finally(() => {

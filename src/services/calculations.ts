@@ -575,9 +575,11 @@ export function calculateAllHoldings(
     if (pos.quantity <= 0) continue;
 
     const priceInfo = priceMap.get(stock.id);
-    const currentPrice = priceInfo ? priceInfo.latestPrice : pos.averageBuyPrice;
+    const currentPrice = priceInfo
+      ? priceInfo.latestPrice
+      : (stock.targetBuyPrice || stock.vwap || pos.averageBuyPrice);
     const lastPriceDate = priceInfo ? priceInfo.latestDate : null;
-    const isPriceStale = isDateOlderThanDays(lastPriceDate, 7);
+    const isPriceStale = !priceInfo || isDateOlderThanDays(lastPriceDate, 7);
 
     const currentValue = pos.quantity * currentPrice;
     const unrealizedPnL = currentValue - pos.totalCostBasis;

@@ -142,7 +142,7 @@ export const StocksAndPricesView: React.FC<StocksAndPricesViewProps> = ({
                 {/* Price Display */}
                 <div className="p-3 bg-slate-900/80 border border-slate-800/80 rounded-xl my-3">
                   <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
-                    <span>Manual Price</span>
+                    <span>{priceInfo ? 'Recorded Price / CMP' : (stock.targetBuyPrice || stock.vwap ? 'Live Market Price (CMP)' : 'Manual Price')}</span>
                     <button
                       onClick={() => onOpenPriceUpdate(stock.id!)}
                       className="text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 text-[11px]"
@@ -154,29 +154,43 @@ export const StocksAndPricesView: React.FC<StocksAndPricesViewProps> = ({
 
                   <div className="flex items-baseline justify-between">
                     <div className="text-xl font-extrabold text-white tabular-nums">
-                      {priceInfo ? formatINR(priceInfo.price) : 'No price set'}
+                      {priceInfo
+                        ? formatINR(priceInfo.price)
+                        : (stock.targetBuyPrice || stock.vwap)
+                        ? formatINR(stock.targetBuyPrice || stock.vwap!)
+                        : 'No price set'}
                     </div>
 
                     <div>
-                      {isStale ? (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
-                          <AlertTriangle className="w-3 h-3" />
-                          <span>Stale ({formatDaysAgo(priceInfo?.date)})</span>
+                      {priceInfo ? (
+                        isStale ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                            <AlertTriangle className="w-3 h-3" />
+                            <span>Stale ({formatDaysAgo(priceInfo?.date)})</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
+                            <Clock className="w-3 h-3 text-slate-500" />
+                            <span>{formatDaysAgo(priceInfo?.date)}</span>
+                          </span>
+                        )
+                      ) : (stock.targetBuyPrice || stock.vwap) ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                          Live Feed
                         </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
-                          <Clock className="w-3 h-3 text-slate-500" />
-                          <span>{formatDaysAgo(priceInfo?.date)}</span>
-                        </span>
-                      )}
+                      ) : null}
                     </div>
                   </div>
 
-                  {priceInfo && (
+                  {priceInfo ? (
                     <div className="text-[10px] text-slate-500 mt-1">
                       Recorded on: {formatDateDDMMYYYY(priceInfo.date)}
                     </div>
-                  )}
+                  ) : (stock.targetBuyPrice || stock.vwap) ? (
+                    <div className="text-[10px] text-slate-400 mt-1">
+                      Fetched from Yahoo / BSE real-time stream
+                    </div>
+                  ) : null}
                 </div>
 
                 {/* Position in Portfolio */}

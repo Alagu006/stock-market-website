@@ -625,7 +625,7 @@ app.get('/api/bse-quote', async (req, res) => {
   }
 });
 
-// 2. Live Quotes Endpoint
+// 2. Live Quotes Endpoint (Supports Yahoo NSE/BSE + BSE India Official Fallback)
 app.get('/api/quote', async (req, res) => {
   const symbolsParam = req.query.symbols;
   if (!symbolsParam || typeof symbolsParam !== 'string') {
@@ -645,7 +645,7 @@ app.get('/api/quote', async (req, res) => {
   const symbolsToFetch = [];
 
   for (const s of rawSymbols) {
-    const cached = getCached(`quote_${s}`);
+    const cached = getCached(`quote_${s}`) || getCached(`quote_${s.toUpperCase()}`);
     if (cached) {
       quotesResult.push(cached);
     } else {
@@ -654,15 +654,37 @@ app.get('/api/quote', async (req, res) => {
   }
 
   if (symbolsToFetch.length > 0) {
+    // 1. Prepare candidates: If bare symbol like 'RELIANCE', query 'RELIANCE.NS' and 'RELIANCE.BO'
+    const queryMap = new Map(); // yahooSymbol -> originalRawSymbols[]
+    for (const raw of symbolsToFetch) {
+      const trimmed = raw.trim();
+      const upper = trimmed.toUpperCase();
+      if (upper.endsWith('.NS') || upper.endsWith('.BO') || upper.startsWith('^')) {
+        if (!queryMap.has(upper)) queryMap.set(upper, []);
+        queryMap.get(upper).push(raw);
+      } else if (/^\d{6}$/.test(upper)) {
+        const bseSym = `${upper}.BO`;
+        if (!queryMap.has(bseSym)) queryMap.set(bseSym, []);
+        queryMap.get(bseSym).push(raw);
+      } else {
+        const nseSym = `${upper}.NS`;
+        const bseSym = `${upper}.BO`;
+        if (!queryMap.has(nseSym)) queryMap.set(nseSym, []);
+        if (!queryMap.has(bseSym)) queryMap.set(bseSym, []);
+        queryMap.get(nseSym).push(raw);
+        queryMap.get(bseSym).push(raw);
+      }
+    }
+
+    const uniqueYahooSymbols = Array.from(queryMap.keys());
+
     // Attempt 1: Fetch via v7 bulk endpoint with Yahoo cookie/crumb
     const { cookie, crumb } = await getYahooCrumbSession();
-    let bulkSuccess = false;
-
     if (cookie && crumb) {
       try {
         const chunkSize = 40;
-        for (let i = 0; i < symbolsToFetch.length; i += chunkSize) {
-          const chunk = symbolsToFetch.slice(i, i + chunkSize);
+        for (let i = 0; i < uniqueYahooSymbols.length; i += chunkSize) {
+          const chunk = uniqueYahooSymbols.slice(i, i + chunkSize);
           const encoded = chunk.map((s) => encodeURIComponent(s)).join(',');
           const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${encoded}&crumb=${crumb}`;
 
@@ -692,38 +714,130 @@ app.get('/api/quote', async (req, res) => {
                     date: item.dividendDate ? new Date(item.dividendDate * 1000).toISOString().split('T')[0] : '',
                   }
                 : null,
-              marketCap: item.marketCap ? Math.round(item.marketCap / 10000000) : null, // ₹ Crore
+              marketCap: item.marketCap ? Math.round(item.marketCap / 10000000) : null,
               currency: item.currency || 'INR',
               timestamp: new Date().toISOString(),
             };
 
             setCached(`quote_${item.symbol}`, mapped);
+            const cleanSym = item.symbol.replace(/\.(NS|BO)$/i, '');
+            setCached(`quote_${cleanSym}`, mapped);
+
+            const originals = queryMap.get(item.symbol.toUpperCase()) || [];
+            for (const orig of originals) {
+              setCached(`quote_${orig}`, mapped);
+            }
             quotesResult.push(mapped);
           }
         }
-        bulkSuccess = true;
       } catch (err) {
         console.warn('[Proxy] v7 bulk quote failed, switching to v8 individual fallback:', err.message);
       }
     }
 
-    // Attempt 2: If bulk failed or missed symbols, fetch remaining symbols via v8 chart
-    const fetchedSymbolsSet = new Set(quotesResult.map((q) => q.symbol));
-    const missingSymbols = symbolsToFetch.filter((s) => !fetchedSymbolsSet.has(s));
+    // Attempt 2: Fetch remaining via v8 chart endpoint
+    const fetchedSymbolsSet = new Set(quotesResult.map((q) => q.symbol.toUpperCase()));
+    const missingYahooSymbols = uniqueYahooSymbols.filter((s) => !fetchedSymbolsSet.has(s.toUpperCase()));
 
-    if (missingSymbols.length > 0) {
-      const v8Promises = missingSymbols.map(async (sym) => {
+    if (missingYahooSymbols.length > 0) {
+      const v8Promises = missingYahooSymbols.map(async (sym) => {
         const quote = await fetchV8ChartQuote(sym);
-        if (quote) {
+        if (quote && quote.price > 0) {
           setCached(`quote_${sym}`, quote);
+          const cleanSym = sym.replace(/\.(NS|BO)$/i, '');
+          setCached(`quote_${cleanSym}`, quote);
+
+          const originals = queryMap.get(sym.toUpperCase()) || [];
+          for (const orig of originals) {
+            setCached(`quote_${orig}`, quote);
+          }
           quotesResult.push(quote);
         }
       });
       await Promise.all(v8Promises);
     }
+
+    // Attempt 3: BSE India Official API Fallback for any symbols still missing
+    const stillFetchedCleanSet = new Set(
+      quotesResult.map((q) => q.symbol.replace(/\.(NS|BO)$/i, '').toUpperCase())
+    );
+
+    const bsePromises = symbolsToFetch
+      .filter((s) => !stillFetchedCleanSet.has(s.replace(/\.(NS|BO)$/i, '').toUpperCase()))
+      .map(async (rawSym) => {
+        const clean = rawSym.replace(/\.(NS|BO)$/i, '').trim();
+        const isBseCode = /^\d{6}$/.test(clean);
+
+        let scripCode = isBseCode ? clean : null;
+        let symbolTicker = !isBseCode ? clean : null;
+
+        // Try looking up in stocksDirectory if available
+        if (!scripCode && fs.existsSync(DIRECTORY_FILE_PATH)) {
+          try {
+            const dirData = JSON.parse(fs.readFileSync(DIRECTORY_FILE_PATH, 'utf-8'));
+            const match = dirData.find(
+              (item) => item.symbol?.toUpperCase() === clean.toUpperCase() || item.bseCode === clean
+            );
+            if (match?.bseCode) scripCode = match.bseCode;
+          } catch (_) {}
+        }
+
+        if (scripCode) {
+          try {
+            const bseData = await fetchBseData(scripCode, symbolTicker);
+            if (bseData && (bseData.ltp || bseData.previousClose)) {
+              const price = bseData.ltp || bseData.previousClose || 0;
+              const prev = bseData.previousClose || price;
+              const change = Number((price - prev).toFixed(2));
+              const changePercent = prev > 0 ? Number(((change / prev) * 100).toFixed(2)) : 0;
+
+              const bseQuote = {
+                symbol: rawSym.toUpperCase(),
+                shortName: bseData.symbol || clean,
+                price,
+                previousClose: prev,
+                change,
+                changePercent,
+                dayHigh: bseData.high || null,
+                dayLow: bseData.low || null,
+                high52W: bseData.high52W || null,
+                low52W: bseData.low52W || null,
+                pe: bseData.pe || null,
+                forwardPE: null,
+                dividendYield: null,
+                latestDividend: null,
+                marketCap: bseData.mcapFullCr ? Math.round(bseData.mcapFullCr) : null,
+                currency: 'INR',
+                timestamp: new Date().toISOString(),
+                bseData,
+              };
+
+              setCached(`quote_${rawSym}`, bseQuote);
+              setCached(`quote_${clean}`, bseQuote);
+              setCached(`quote_${scripCode}`, bseQuote);
+              setCached(`quote_${scripCode}.BO`, bseQuote);
+              quotesResult.push(bseQuote);
+            }
+          } catch (err) {
+            console.warn(`[Proxy] BSE fallback failed for ${rawSym}:`, err.message);
+          }
+        }
+      });
+
+    await Promise.all(bsePromises);
   }
 
-  res.json({ quotes: quotesResult });
+  // Deduplicate results by symbol
+  const seenQuotes = new Set();
+  const dedupedQuotes = [];
+  for (const q of quotesResult) {
+    if (!seenQuotes.has(q.symbol)) {
+      seenQuotes.add(q.symbol);
+      dedupedQuotes.push(q);
+    }
+  }
+
+  res.json({ quotes: dedupedQuotes });
 });
 
 // 3. Major Indian Indices (NIFTY 50, SENSEX, NIFTY BANK)
