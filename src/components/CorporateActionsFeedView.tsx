@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Bell,
   Coins,
@@ -47,6 +47,9 @@ export const CorporateActionsFeedView: React.FC<CorporateActionsFeedViewProps> =
   const [announcements, setAnnouncements] = useState<Array<{ symbol: string; item: StockEdgeNewsItem }>>([]);
   const [refreshIndex, setRefreshIndex] = useState(0);
 
+  const isFetchingRef = useRef(false);
+  const lastFetchedKeyRef = useRef<string>('');
+
   // Dividend record modal state
   const [recordingDiv, setRecordingDiv] = useState<{
     stock: Stock;
@@ -67,49 +70,85 @@ export const CorporateActionsFeedView: React.FC<CorporateActionsFeedViewProps> =
     return stocks;
   }, [stocks, holdings, filterMode]);
 
-  // Fetch events & announcements concurrently in chunks
-  const loadEvents = useCallback(async () => {
-    if (targetStocks.length === 0) return;
-    setLoading(true);
-
-    const newEventsMap = new Map<string, CorporateEventData>();
-    const newAnnouncements: Array<{ symbol: string; item: StockEdgeNewsItem }> = [];
-
-    const stockSlice = targetStocks.slice(0, 20);
-    const chunks: Stock[][] = [];
-    for (let i = 0; i < stockSlice.length; i += 5) {
-      chunks.push(stockSlice.slice(i, i + 5));
-    }
-
-    for (const chunk of chunks) {
-      await Promise.all(
-        chunk.map(async (st) => {
-          try {
-            const [ev, news] = await Promise.all([
-              fetchCorporateEvents(st.symbol, st.bseCode),
-              fetchStockEdgeNews(st.symbol),
-            ]);
-            if (ev) {
-              newEventsMap.set(st.symbol.toUpperCase(), ev);
-            }
-            if (news && news.items && news.items.length > 0) {
-              news.items.forEach((item) => {
-                newAnnouncements.push({ symbol: st.symbol, item });
-              });
-            }
-          } catch {}
-        })
-      );
-    }
-
-    setEventsMap(newEventsMap);
-    setAnnouncements(newAnnouncements);
-    setLoading(false);
+  // Stable key based on symbols to avoid refetching on every DB/price update
+  const targetSymbolsKey = useMemo(() => {
+    return targetStocks
+      .map((s) => `${s.symbol.toUpperCase()}:${s.bseCode || ''}`)
+      .sort()
+      .join(',');
   }, [targetStocks]);
 
+  // Fetch events & announcements once per symbol set or on manual refresh
   useEffect(() => {
-    loadEvents();
-  }, [loadEvents, refreshIndex]);
+    if (!targetSymbolsKey) {
+      setLoading(false);
+      return;
+    }
+
+    const currentKey = `${filterMode}_${targetSymbolsKey}_${refreshIndex}`;
+    if (lastFetchedKeyRef.current === currentKey) {
+      return;
+    }
+
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    lastFetchedKeyRef.current = currentKey;
+
+    let isMounted = true;
+    setLoading(true);
+
+    const loadData = async () => {
+      try {
+        const newEventsMap = new Map<string, CorporateEventData>();
+        const newAnnouncements: Array<{ symbol: string; item: StockEdgeNewsItem }> = [];
+
+        const stockSlice = targetStocks.slice(0, 15);
+        const chunks: Stock[][] = [];
+        for (let i = 0; i < stockSlice.length; i += 5) {
+          chunks.push(stockSlice.slice(i, i + 5));
+        }
+
+        for (const chunk of chunks) {
+          if (!isMounted) break;
+          await Promise.all(
+            chunk.map(async (st) => {
+              try {
+                const [ev, news] = await Promise.all([
+                  fetchCorporateEvents(st.symbol, st.bseCode),
+                  fetchStockEdgeNews(st.symbol),
+                ]);
+                if (ev && isMounted) {
+                  newEventsMap.set(st.symbol.toUpperCase(), ev);
+                }
+                if (news && news.items && news.items.length > 0 && isMounted) {
+                  news.items.forEach((item) => {
+                    newAnnouncements.push({ symbol: st.symbol, item });
+                  });
+                }
+              } catch {}
+            })
+          );
+        }
+
+        if (isMounted) {
+          setEventsMap(newEventsMap);
+          setAnnouncements(newAnnouncements);
+        }
+      } finally {
+        isFetchingRef.current = false;
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadData();
+
+    return () => {
+      isMounted = false;
+      isFetchingRef.current = false;
+    };
+  }, [filterMode, targetSymbolsKey, refreshIndex]);
 
   // Aggregate detected dividends
   const detectedDividends = useMemo(() => {
