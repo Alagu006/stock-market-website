@@ -638,6 +638,7 @@ export function calculatePortfolioKPIs(
   let currentValue = 0;
   let annualDividendIncome = 0;
   let dayChangeValue = 0;
+  let previousTotalValue = 0;
 
   for (const h of holdings) {
     totalInvested += h.totalInvested;
@@ -646,12 +647,15 @@ export function calculatePortfolioKPIs(
 
     if (h.previousPrice !== undefined) {
       dayChangeValue += h.quantity * (h.currentPrice - h.previousPrice);
+      previousTotalValue += h.quantity * h.previousPrice;
+    } else {
+      previousTotalValue += h.currentValue;
     }
   }
 
   const unrealizedPnL = currentValue - totalInvested;
   const unrealizedPnLPercent = totalInvested > 0 ? (unrealizedPnL / totalInvested) * 100 : 0;
-  const dayChangePercent = currentValue > 0 && currentValue !== dayChangeValue ? (dayChangeValue / (currentValue - dayChangeValue)) * 100 : 0;
+  const dayChangePercent = previousTotalValue > 0 ? (dayChangeValue / previousTotalValue) * 100 : 0;
   const portfolioYieldOnCost = totalInvested > 0 ? (annualDividendIncome / totalInvested) * 100 : 0;
 
   // Realized P&L across ALL stocks (including closed positions)
@@ -955,7 +959,10 @@ export function generateProsAndCons(
   // Cost basis comparison
   if (averageBuyPrice && currentPrice > 0 && currentPrice < averageBuyPrice) {
     const dip = ((averageBuyPrice - currentPrice) / averageBuyPrice) * 100;
-    pros.push(`Current price is ${dip.toFixed(1)}% below your average cost basis`);
+    pros.push(`Opportunity to average down: CMP is ${dip.toFixed(1)}% below your buy average`);
+  } else if (averageBuyPrice && currentPrice > 0 && currentPrice > averageBuyPrice) {
+    const profit = ((currentPrice - averageBuyPrice) / averageBuyPrice) * 100;
+    pros.push(`Solid position gain: Trading ${profit.toFixed(1)}% above your average buy price`);
   }
 
   // Default fallbacks if empty
@@ -1168,10 +1175,28 @@ export function calculateTaxSummaryByFY(
 
   map.forEach((val, fy) => {
     const totalRealizedPnL = val.stcg + val.ltcg;
-    const ltcgExemptionApplied = val.ltcg > 0 ? Math.min(val.ltcg, ltcgExemption) : 0;
-    const taxableLtcg = Math.max(0, val.ltcg - ltcgExemptionApplied);
 
-    const stcgTax = val.stcg > 0 ? (val.stcg * stcgRate) / 100 : 0;
+    // Under Section 70 of Indian Income Tax Act:
+    // Short-Term Capital Loss (STCL) can be set off against both STCG and LTCG.
+    // Long-Term Capital Loss (LTCL) can only be set off against LTCG.
+    let netLtcg = val.ltcg;
+    let taxableStcg = 0;
+
+    if (val.stcg < 0) {
+      // Short-Term Capital Loss: set off against LTCG if LTCG is positive
+      const stcl = Math.abs(val.stcg);
+      if (netLtcg > 0) {
+        netLtcg = Math.max(0, netLtcg - stcl);
+      }
+      taxableStcg = 0;
+    } else {
+      taxableStcg = val.stcg;
+    }
+
+    const ltcgExemptionApplied = netLtcg > 0 ? Math.min(netLtcg, ltcgExemption) : 0;
+    const taxableLtcg = Math.max(0, netLtcg - ltcgExemptionApplied);
+
+    const stcgTax = taxableStcg > 0 ? (taxableStcg * stcgRate) / 100 : 0;
     const ltcgTax = taxableLtcg > 0 ? (taxableLtcg * ltcgRate) / 100 : 0;
     const totalTax = stcgTax + ltcgTax;
 
@@ -1586,10 +1611,28 @@ export function simulateStockCompounding(params: {
   const finalCorpus = yearBreakdown[yearBreakdown.length - 1]?.corpusValue || 0;
   const wealthGain = Math.round((finalCorpus - finalInvested) * 100) / 100;
 
-  // Effective CAGR
+  // Effective compounding rate: Money-Weighted Return (IRR) for Accumulation, CAGR for Lump Sum
   let cagr = 0;
   if (finalInvested > 0 && horizonYears > 0) {
-    cagr = Math.round((Math.pow(finalCorpus / finalInvested, 1 / horizonYears) - 1) * 10000) / 100;
+    if (mode === 'lumpSum') {
+      cagr = Math.round((Math.pow(finalCorpus / finalInvested, 1 / horizonYears) - 1) * 10000) / 100;
+    } else {
+      const cfs: Array<{ date: string; amount: number }> = [];
+      if (initialTurnover + initialCharges > 0) {
+        cfs.push({ date: '2024-01-01', amount: -(initialTurnover + initialCharges) });
+      }
+      yearBreakdown.forEach((yr) => {
+        if (yr.investedThisYear > 0) {
+          cfs.push({ date: `${2024 + yr.year}-01-01`, amount: -yr.investedThisYear });
+        }
+      });
+      cfs.push({ date: `${2024 + horizonYears}-12-31`, amount: +finalCorpus });
+      const xirr = calculateXIRR(cfs);
+      cagr =
+        xirr !== null
+          ? Math.round(xirr * 100) / 100
+          : Math.round((Math.pow(finalCorpus / finalInvested, 1 / horizonYears) - 1) * 10000) / 100;
+    }
   }
 
   return {

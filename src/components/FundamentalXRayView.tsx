@@ -238,8 +238,7 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
     const computedIntrinsic =
       base.intrinsicValue ||
       enrichedFund?.intrinsicValue ||
-      calculateIntrinsicValue(eps, bookValue, profitCagr10Y) ||
-      (latestPrice > 0 ? Math.round(latestPrice * 1.15 * 100) / 100 : undefined);
+      calculateIntrinsicValue(eps, bookValue, profitCagr10Y);
 
     const computedMarginOfSafety =
       base.marginOfSafety !== undefined
