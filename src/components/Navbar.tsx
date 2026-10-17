@@ -17,8 +17,8 @@ interface NavbarProps {
   onCostMethodChange: (method: CostMethod) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
-  activeTab: 'portfolio' | 'stocks';
-  onTabChange: (tab: 'portfolio' | 'stocks') => void;
+  activeTab: 'portfolio' | 'stocks' | 'import-export';
+  onTabChange: (tab: 'portfolio' | 'stocks' | 'import-export') => void;
   settings: AppSettings | undefined;
   onOpenAddTx: () => void;
   onOpenStockMaster: () => void;
@@ -187,6 +187,16 @@ export const Navbar: React.FC<NavbarProps> = ({
               }`}
             >
               Stocks & Manual Prices
+            </button>
+            <button
+              onClick={() => onTabChange('import-export')}
+              className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-all ${
+                activeTab === 'import-export'
+                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+              }`}
+            >
+              Import / Export (Excel & CSV)
             </button>
           </nav>
 

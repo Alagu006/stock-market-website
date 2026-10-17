@@ -118,6 +118,16 @@ export interface AppSettings {
   ltcgRate: number; // default 12.5%
   ltcgExemption: number; // default 1,25,000
   lastBackupDate?: string;
+  savedScreenerMapping?: Record<string, string>;
+}
+
+export interface ImportPreviewRow<T> {
+  rowIndex: number;
+  data: Partial<T>;
+  rawRow: Record<string, any>;
+  errors: string[];
+  warnings: string[];
+  isValid: boolean;
 }
 
 // Derived Holding structure computed on the fly

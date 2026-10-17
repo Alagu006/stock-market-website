@@ -64,6 +64,80 @@ export async function updateCostMethodSetting(method: CostMethod): Promise<void>
   }
 }
 
+export async function updateScreenerMappingSetting(mapping: Record<string, string>): Promise<void> {
+  const settings = await getOrInitSettings();
+  if (settings.id) {
+    await db.settings.update(settings.id, { savedScreenerMapping: mapping });
+  }
+}
+
+export async function bulkImportStocks(stocksData: Omit<Stock, 'id' | 'createdAt'>[]): Promise<void> {
+  await db.transaction('rw', db.stocks, async () => {
+    for (const item of stocksData) {
+      const existing = await db.stocks
+        .where('symbol')
+        .equalsIgnoreCase(item.symbol)
+        .first();
+
+      if (existing && existing.id) {
+        await db.stocks.update(existing.id, {
+          bseCode: item.bseCode || existing.bseCode,
+          name: item.name || existing.name,
+          sector: item.sector || existing.sector,
+          marketCapCategory: item.marketCapCategory || existing.marketCapCategory,
+          isin: item.isin || existing.isin,
+          expectedDividendPerShare: item.expectedDividendPerShare ?? existing.expectedDividendPerShare,
+        });
+      } else {
+        await db.stocks.add({
+          ...item,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
+  });
+}
+
+export async function bulkUpsertFundamentals(
+  funds: Array<Partial<Fundamentals> & { stockId: number; symbol: string }>
+): Promise<void> {
+  await db.transaction('rw', db.fundamentals, async () => {
+    for (const item of funds) {
+      const existing = await db.fundamentals
+        .where('stockId')
+        .equals(item.stockId)
+        .first();
+
+      if (existing && existing.id) {
+        await db.fundamentals.update(existing.id, {
+          ...item,
+          lastUpdated: new Date().toISOString().split('T')[0],
+        });
+      } else {
+        await db.fundamentals.add({
+          stockId: item.stockId,
+          symbol: item.symbol,
+          marketCapCr: item.marketCapCr,
+          stockPE: item.stockPE,
+          sectorPE: item.sectorPE,
+          roce: item.roce,
+          roe: item.roe,
+          debtToEquity: item.debtToEquity,
+          evToEbitda: item.evToEbitda,
+          pbRatio: item.pbRatio,
+          dividendYield: item.dividendYield,
+          salesCagr10Y: item.salesCagr10Y,
+          profitCagr10Y: item.profitCagr10Y,
+          high52W: item.high52W,
+          low52W: item.low52W,
+          intrinsicValue: item.intrinsicValue,
+          lastUpdated: new Date().toISOString().split('T')[0],
+        });
+      }
+    }
+  });
+}
+
 export async function updateLastBackupTimestamp(): Promise<string> {
   const settings = await getOrInitSettings();
   const nowISO = new Date().toISOString();

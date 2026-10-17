@@ -4,9 +4,12 @@ import {
   db,
   getOrInitSettings,
   updateCostMethodSetting,
+  updateScreenerMappingSetting,
+  bulkImportStocks,
+  bulkUpsertFundamentals,
   seedSampleIndianPortfolio,
 } from './db';
-import type { Stock, Transaction, CostMethod, TransactionType } from './types';
+import type { Stock, Transaction, CostMethod, TransactionType, Fundamentals } from './types';
 import {
   calculateAllHoldings,
   calculatePortfolioKPIs,
@@ -17,6 +20,7 @@ import { KPICards } from './components/KPICards';
 import { SectorAllocationCard } from './components/SectorAllocationCard';
 import { HoldingsTable } from './components/HoldingsTable';
 import { StocksAndPricesView } from './components/StocksAndPricesView';
+import { ImportExportView } from './components/ImportExportView';
 import { AddTransactionModal } from './components/AddTransactionModal';
 import { LotHistoryModal } from './components/LotHistoryModal';
 import { ReverseTargetAvgModal } from './components/ReverseTargetAvgModal';
@@ -38,7 +42,7 @@ export function App() {
 
   // Active Cost Method state (defaults to 'Average Cost' if not yet initialized)
   const [costMethod, setCostMethod] = useState<CostMethod>('Average Cost');
-  const [activeTab, setActiveTab] = useState<'portfolio' | 'stocks'>('portfolio');
+  const [activeTab, setActiveTab] = useState<'portfolio' | 'stocks' | 'import-export'>('portfolio');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Modals state
@@ -160,6 +164,41 @@ export function App() {
     });
   };
 
+  // Handlers for Phase 2: Imports & Exports
+  const handleConfirmImportStocks = async (newStocks: Omit<Stock, 'id' | 'createdAt'>[]) => {
+    await bulkImportStocks(newStocks);
+  };
+
+  const handleConfirmImportTransactions = async (newTxs: Omit<Transaction, 'id' | 'createdAt'>[]) => {
+    await db.transactions.bulkAdd(
+      newTxs.map((tx) => ({
+        ...tx,
+        createdAt: new Date().toISOString(),
+      }))
+    );
+  };
+
+  const handleConfirmBulkPrices = async (
+    prices: Array<{ stockId: number; symbol: string; price: number; date: string }>
+  ) => {
+    await db.priceRecords.bulkAdd(
+      prices.map((p) => ({
+        ...p,
+        createdAt: new Date().toISOString(),
+      }))
+    );
+  };
+
+  const handleConfirmScreenerFundamentals = async (
+    funds: Array<Partial<Fundamentals> & { stockId: number; symbol: string }>
+  ) => {
+    await bulkUpsertFundamentals(funds);
+  };
+
+  const handleSaveScreenerMapping = async (mapping: Record<string, string>) => {
+    await updateScreenerMappingSetting(mapping);
+  };
+
   // Pre-fill buy order from Target-Average calculator
   const handlePreFillBuy = (stockId: number, qty: number, plannedPrice: number) => {
     setAddTxPreFill({
@@ -193,7 +232,7 @@ export function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {activeTab === 'portfolio' ? (
+        {activeTab === 'portfolio' && (
           <>
             {/* KPI Cards */}
             <KPICards kpis={portfolioKPIs} costMethod={costMethod} />
@@ -219,8 +258,9 @@ export function App() {
               onOpenStockMaster={() => setIsStockMasterOpen(true)}
             />
           </>
-        ) : (
-          /* Stocks & Manual Prices View */
+        )}
+
+        {activeTab === 'stocks' && (
           <StocksAndPricesView
             stocks={stocks}
             priceRecords={priceRecords}
@@ -236,6 +276,24 @@ export function App() {
             onOpenStockMaster={() => setIsStockMasterOpen(true)}
             onOpenLotHistory={(stockId) => setLotHistoryStockId(stockId)}
             onOpenTargetAvg={(stockId) => setTargetAvgStockId(stockId)}
+          />
+        )}
+
+        {activeTab === 'import-export' && (
+          <ImportExportView
+            stocks={stocks}
+            holdings={allHoldings}
+            transactions={transactions}
+            corporateActions={corporateActions}
+            priceRecords={priceRecords}
+            fundamentalsList={fundamentalsList}
+            costMethod={costMethod}
+            savedScreenerMapping={currentSettings?.savedScreenerMapping}
+            onSaveScreenerMapping={handleSaveScreenerMapping}
+            onConfirmImportStocks={handleConfirmImportStocks}
+            onConfirmImportTransactions={handleConfirmImportTransactions}
+            onConfirmBulkPrices={handleConfirmBulkPrices}
+            onConfirmScreenerFundamentals={handleConfirmScreenerFundamentals}
           />
         )}
       </main>
@@ -254,7 +312,7 @@ export function App() {
               <span>100% Client-Side IndexedDB</span>
             </span>
             <span>•</span>
-            <span>Phase 1: Portfolio Core</span>
+            <span>Phase 2: Excel / CSV Import & Export</span>
           </div>
         </div>
       </footer>
