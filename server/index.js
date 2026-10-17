@@ -433,88 +433,101 @@ async function fetchYahooQuoteSummary(symbol) {
 }
 
 /**
- * Task 3: On-Demand StockEdge News Fetcher with 5-10s Rate-Limiting Delay & Mutex
+ * Task 3: On-Demand StockEdge News Fetcher using direct StockEdge JSON APIs
  */
-let isStockEdgeLocked = false;
-let lastStockEdgeRequestTime = 0;
-
-async function fetchStockEdgeUpdates(symbol) {
-  const cleanSym = symbol.replace(/\.(NS|BO)$/i, '').trim();
+async function fetchStockEdgeUpdates(symbol, bseCode) {
+  const cleanSym = String(symbol).replace(/\.(NS|BO)$/i, '').trim();
   const cacheKey = `stockedge_${cleanSym.toUpperCase()}`;
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
-  // Rate-limiting delay & concurrency lock
-  while (isStockEdgeLocked) {
-    await new Promise((r) => setTimeout(r, 400));
-  }
+  const stockEdgeHeaders = {
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    Origin: 'https://web.stockedge.com',
+    Referer: 'https://web.stockedge.com/',
+  };
 
-  isStockEdgeLocked = true;
   try {
-    const elapsed = Date.now() - lastStockEdgeRequestTime;
-    const minDelay = 5000 + Math.floor(Math.random() * 5000); // 5000ms - 10000ms delay
-    if (elapsed < minDelay) {
-      await new Promise((r) => setTimeout(r, minDelay - elapsed));
-    }
-    lastStockEdgeRequestTime = Date.now();
-
     // 1. Search StockEdge Universal Search to get DocId / Slug
-    const searchUrl = `https://api.stockedge.com/Api/UniversalSearchApi/GetQuickSearchResult?searchTerm=${encodeURIComponent(cleanSym)}`;
-    const searchRes = await fetchWithRetry(searchUrl, {
-      headers: {
-        Origin: 'https://web.stockedge.com',
-        Referer: 'https://web.stockedge.com/',
-      },
-    }, 1, 6000);
+    const candidates = [cleanSym];
+    if (bseCode && /^\d{6}$/.test(String(bseCode).trim())) {
+      candidates.push(String(bseCode).trim());
+    }
 
     let docId = null;
     let slug = null;
-    if (searchRes?.Data && Array.isArray(searchRes.Data)) {
-      const match = searchRes.Data.find((d) => d.EntityCode === 'se_security');
-      if (match) {
-        docId = match.DocId;
-        slug = match.Slug;
-      }
+
+    for (const cand of candidates) {
+      if (docId) break;
+      try {
+        const searchUrl = `https://api.stockedge.com/Api/UniversalSearchApi/GetQuickSearchResult?searchTerm=${encodeURIComponent(cand)}`;
+        const searchRes = await fetchWithRetry(searchUrl, { headers: stockEdgeHeaders }, 1, 5000);
+        if (searchRes?.Data && Array.isArray(searchRes.Data)) {
+          const match = searchRes.Data.find((d) => d.EntityCode === 'se_security');
+          if (match) {
+            docId = match.DocId;
+            slug = match.Slug;
+          }
+        }
+      } catch (_) {}
     }
 
     const items = [];
-    if (slug && docId) {
-      const pageUrl = `https://web.stockedge.com/share/${slug}/${docId}?section=news`;
+
+    if (docId) {
+      // 2. Query official StockEdge Security News endpoint (real verified announcements, quarterly results, deals)
       try {
-        const pageRes = await fetch(pageUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          },
-        });
+        const newsUrl = `https://api.stockedge.com/Api/SecurityDashboardApi/GetNewsitemsForSecurity/${docId}`;
+        const newsData = await fetchWithRetry(newsUrl, { headers: stockEdgeHeaders }, 1, 6000);
 
-        if (pageRes.ok) {
-          const html = await pageRes.text();
-          const ionItemRegex = /<ion-item[^>]*>([\s\S]*?)<\/ion-item>/gi;
-          const currentDate = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+        if (Array.isArray(newsData) && newsData.length > 0) {
+          for (const item of newsData.slice(0, 15)) {
+            const headline = item.Description || item.Caption || '';
+            if (headline) {
+              const formattedDate = item.Date
+                ? new Date(item.Date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+                : new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 
-          let itemMatch;
-          while ((itemMatch = ionItemRegex.exec(html)) !== null && items.length < 15) {
-            const itemHtml = itemMatch[1];
-            const timeMatch = itemHtml.match(/(\d{1,2}:\d{2}\s*(?:am|pm))/i);
-            const tagMatch =
-              itemHtml.match(/<span[^>]*class=["'][^"']*badge[^"']*["'][^>]*>([\s\S]*?)<\/span>/i) ||
-              itemHtml.match(/(?:Company News|Movers Today|Earnings|Corporate Result|Stock Action|Block Deal)/i);
-            const headlineText = itemHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-
-            if (headlineText.length > 15) {
               items.push({
-                date: currentDate,
-                time: timeMatch ? timeMatch[1] : 'Recent',
-                category: tagMatch ? (typeof tagMatch[1] === 'string' ? tagMatch[1].trim() : tagMatch[0]) : 'Company News',
-                headline: headlineText.slice(0, 180),
-                url: `https://web.stockedge.com/share/${slug}/${docId}?section=news`,
+                date: formattedDate,
+                time: item.Time || 'Recent',
+                category: item.SubSectionName || 'Company News',
+                headline: headline.slice(0, 220),
+                url: slug ? `https://web.stockedge.com/share/${slug}/${docId}?section=news` : 'https://web.stockedge.com/',
               });
             }
           }
         }
       } catch (err) {
-        console.warn(`[StockEdge] Page fetch error for ${cleanSym}:`, err.message);
+        console.warn(`[StockEdge] Security news API error for ${cleanSym}:`, err.message);
+      }
+
+      // 3. Fallback or augment with RSS feeds if security news has fewer than 3 items
+      if (items.length < 3) {
+        try {
+          const rssUrl = `https://api.stockedge.com/Api/RssfeedApi/GetRssFeedsForSecurity/${docId}`;
+          const rssData = await fetchWithRetry(rssUrl, { headers: stockEdgeHeaders }, 1, 5000);
+
+          if (Array.isArray(rssData)) {
+            for (const rss of rssData.slice(0, 10)) {
+              if (items.length >= 15) break;
+              if (rss.Title) {
+                const formattedDate = rss.Pubdate
+                  ? new Date(rss.Pubdate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+                  : new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+                items.push({
+                  date: formattedDate,
+                  time: rss.Source || 'Feed',
+                  category: 'News Feed',
+                  headline: rss.Title.slice(0, 220),
+                  url: rss.Link || (slug ? `https://web.stockedge.com/share/${slug}/${docId}?section=news` : 'https://web.stockedge.com/'),
+                });
+              }
+            }
+          }
+        } catch (_) {}
       }
     }
 
@@ -524,7 +537,7 @@ async function fetchStockEdgeUpdates(symbol) {
         time: 'Market Hours',
         category: 'Corporate Update',
         headline: `${cleanSym}: Tracking active filings and quarterly updates on BSE / StockEdge portals.`,
-        url: slug && docId ? `https://web.stockedge.com/share/${slug}/${docId}?section=news` : `https://web.stockedge.com/`,
+        url: slug && docId ? `https://web.stockedge.com/share/${slug}/${docId}?section=news` : 'https://web.stockedge.com/',
       });
     }
 
@@ -533,11 +546,13 @@ async function fetchStockEdgeUpdates(symbol) {
       lastUpdated: new Date().toISOString(),
       items,
     };
-    // Cache for 1 hour
+
+    // Cache for 30 minutes
     cache.set(cacheKey, { data: payload, timestamp: Date.now() });
     return payload;
-  } finally {
-    isStockEdgeLocked = false;
+  } catch (err) {
+    console.error(`[StockEdge] Failed to fetch updates for ${cleanSym}:`, err.message);
+    throw err;
   }
 }
 
@@ -1265,15 +1280,16 @@ app.get('/api/fundamentals', async (req, res) => {
   }
 });
 
-// 7. On-demand StockEdge News & Updates with 5-10s safe delay
+// 7. On-demand StockEdge News & Corporate Filings
 app.get('/api/stockedge-updates', async (req, res) => {
   const symbol = req.query.symbol || req.query.stockedgeId;
+  const bseCode = req.query.bseCode;
   if (!symbol || typeof symbol !== 'string') {
     return res.status(400).json({ error: 'Missing "symbol" query parameter' });
   }
 
   try {
-    const data = await fetchStockEdgeUpdates(symbol);
+    const data = await fetchStockEdgeUpdates(symbol, bseCode);
     res.json(data);
   } catch (err) {
     console.error(`[StockEdge] Updates error for ${symbol}:`, err.message);

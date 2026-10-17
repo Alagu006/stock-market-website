@@ -333,15 +333,15 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
     }
   };
 
-  // Task 3: On-demand StockEdge fetcher with 5-10s safe throttle countdown
+  // Task 3: On-demand StockEdge fetcher
   const handleFetchStockEdge = async () => {
     if (!selectedStock || isLoadingStockEdge || stockEdgeCooldown > 0) return;
 
     setIsLoadingStockEdge(true);
     setStockEdgeError(null);
 
-    // Start 7-second cooldown countdown timer
-    let secondsLeft = 7;
+    // Start 3-second cooldown countdown timer
+    let secondsLeft = 3;
     setStockEdgeCooldown(secondsLeft);
     const timer = setInterval(() => {
       secondsLeft -= 1;
@@ -352,7 +352,7 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
     }, 1000);
 
     try {
-      const data = await fetchStockEdgeNews(selectedStock.symbol);
+      const data = await fetchStockEdgeNews(selectedStock.symbol, selectedStock.bseCode);
       if (data && data.items && data.items.length > 0) {
         setStockEdgeNews(data);
       } else {

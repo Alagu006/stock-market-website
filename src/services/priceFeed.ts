@@ -271,14 +271,17 @@ export async function fetchStockFundamentals(
 /**
  * Task 3: Fetch on-demand StockEdge news & updates
  */
-export async function fetchStockEdgeNews(symbol: string): Promise<StockEdgeNewsResponse | null> {
+export async function fetchStockEdgeNews(
+  symbol: string,
+  bseCode?: string
+): Promise<StockEdgeNewsResponse | null> {
   if (!symbol) return null;
   try {
     const controller = new AbortController();
-    // 20s timeout to allow safe rate limit throttle
-    const timeout = setTimeout(() => controller.abort(), 20000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const bseParam = bseCode ? `&bseCode=${encodeURIComponent(bseCode.trim())}` : '';
     const res = await fetch(
-      `${PROXY_BASE_URL}/api/stockedge-updates?symbol=${encodeURIComponent(symbol.trim())}`,
+      `${PROXY_BASE_URL}/api/stockedge-updates?symbol=${encodeURIComponent(symbol.trim())}${bseParam}`,
       { signal: controller.signal }
     );
     clearTimeout(timeout);
