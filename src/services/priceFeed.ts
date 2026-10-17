@@ -1,4 +1,4 @@
-import type { Fundamentals, LiveQuote, MarketIndicesData, CorporateEventData, StockEdgeNewsResponse } from '../types';
+import type { Stock, Fundamentals, LiveQuote, MarketIndicesData, CorporateEventData, StockEdgeNewsResponse } from '../types';
 
 const DEFAULT_PRODUCTION_API = 'https://stock-market-api-odq1.onrender.com';
 
@@ -377,4 +377,122 @@ export function mergeFeedFundamentals(
     },
     lastUpdated: new Date().toISOString().split('T')[0],
   };
+}
+
+/**
+ * Fetch BSE Quote from /api/bse-quote
+ */
+export async function fetchBseQuote(
+  scripcode: string,
+  symbol?: string,
+  slug?: string
+): Promise<any | null> {
+  try {
+    const symQuery = symbol ? `&symbol=${encodeURIComponent(symbol)}` : '';
+    const slugQuery = slug ? `&slug=${encodeURIComponent(slug)}` : '';
+    const res = await fetch(
+      `${PROXY_BASE_URL}/api/bse-quote?scripcode=${encodeURIComponent(scripcode)}${symQuery}${slugQuery}`
+    );
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    console.warn(`[PriceFeed] Error fetching BSE quote for ${scripcode}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Task 2: Map all BSE & fundamental fields to Stock
+ * Populates roe, pb, roce, debtToEquity, evToEbitda, salesCagr10Y, profitCagr10Y, dividendYield, sectorPe, intrinsicValue
+ * whenever they are not manually locked (fieldSources[field] !== 'manual' && fieldSources[field] !== 'screener').
+ * Automatically calculates Intrinsic Value using Graham's formula and Margin of Safety (%).
+ * Fallback sectorPe from average pe of all stocks sharing the same sector / basicIndustry.
+ */
+export function applyFeedToStock(
+  stock: Stock,
+  feedData: {
+    fundamentals?: Partial<Fundamentals>;
+    bseData?: any;
+    quote?: LiveQuote;
+  },
+  allStocks: Stock[] = []
+): Stock {
+  const sources = stock.fieldSources || {};
+  const isLocked = (field: string) => sources[field] === 'manual' || sources[field] === 'screener';
+
+  const updated: Stock = { ...stock };
+  const fund = feedData.fundamentals || {};
+  const bse = feedData.bseData || {};
+  const quote = feedData.quote;
+
+  const currentPrice = quote?.price || stock.targetBuyPrice || 0;
+
+  // Sector PE: use feed/stock sectorPe, or compute average pe from db.stocks with same sector/basicIndustry
+  let sectorPe = fund.sectorPE || stock.sectorPe;
+  if (!sectorPe && allStocks.length > 0) {
+    const peers = allStocks.filter(
+      (s) =>
+        s.id !== stock.id &&
+        (s.sector === stock.sector || (stock.basicIndustry && s.basicIndustry === stock.basicIndustry)) &&
+        (s.peConsolidated || s.peStandalone)
+    );
+    if (peers.length > 0) {
+      const sumPe = peers.reduce((acc, curr) => acc + (curr.peConsolidated || curr.peStandalone || 0), 0);
+      sectorPe = Math.round((sumPe / peers.length) * 100) / 100;
+    }
+  }
+
+  // Populate fundamental ratios if not locked
+  if (!isLocked('sectorPe') && sectorPe) updated.sectorPe = sectorPe;
+  if (!isLocked('roe')) updated.roe = fund.roe ?? bse.roe ?? stock.roe;
+  if (!isLocked('pb')) updated.pb = fund.pbRatio ?? bse.pbRatio ?? stock.pb;
+  if (!isLocked('roce')) updated.roce = fund.roce ?? stock.roce;
+  if (!isLocked('debtToEquity')) updated.debtToEquity = fund.debtToEquity ?? stock.debtToEquity;
+  if (!isLocked('evToEbitda')) updated.evToEbitda = fund.evToEbitda ?? stock.evToEbitda;
+  if (!isLocked('salesCagr10Y')) updated.salesCagr10Y = fund.salesCagr10Y ?? stock.salesCagr10Y;
+  if (!isLocked('profitCagr10Y')) updated.profitCagr10Y = fund.profitCagr10Y ?? stock.profitCagr10Y;
+  if (!isLocked('dividendYield')) updated.dividendYield = fund.dividendYield ?? quote?.dividendYield ?? stock.dividendYield;
+
+  // BSE specific fields
+  if (!isLocked('vwap')) updated.vwap = bse.vwap ?? fund.vwap ?? stock.vwap;
+  if (!isLocked('epsStandalone')) updated.epsStandalone = bse.epsStandalone ?? fund.epsStandalone ?? stock.epsStandalone;
+  if (!isLocked('epsConsolidated')) updated.epsConsolidated = bse.epsConsolidated ?? fund.epsConsolidated ?? bse.eps ?? stock.epsConsolidated;
+  if (!isLocked('cepsStandalone')) updated.cepsStandalone = bse.cepsStandalone ?? stock.cepsStandalone;
+  if (!isLocked('cepsConsolidated')) updated.cepsConsolidated = bse.ceps ?? stock.cepsConsolidated;
+  if (!isLocked('peStandalone')) updated.peStandalone = bse.peStandalone ?? stock.peStandalone;
+  if (!isLocked('peConsolidated')) updated.peConsolidated = bse.peConsolidated ?? bse.pe ?? quote?.pe ?? stock.peConsolidated;
+  if (!isLocked('upperPriceBand')) updated.upperPriceBand = bse.upperBand ?? bse.upperPriceBand ?? fund.upperBand ?? stock.upperPriceBand;
+  if (!isLocked('lowerPriceBand')) updated.lowerPriceBand = bse.lowerBand ?? bse.lowerPriceBand ?? fund.lowerBand ?? stock.lowerPriceBand;
+  if (!isLocked('priceBand')) updated.priceBand = bse.priceBand ?? stock.priceBand;
+  if (!isLocked('ttqLakh')) updated.ttqLakh = bse.ttqLakh ?? stock.ttqLakh;
+  if (!isLocked('turnoverCr')) updated.turnoverCr = bse.turnoverCr ?? stock.turnoverCr;
+  if (!isLocked('twoWeekAvgQtyLakh')) updated.twoWeekAvgQtyLakh = bse.avgQty2WLakh ?? fund.avgQty2WLakh ?? stock.twoWeekAvgQtyLakh;
+  if (!isLocked('mcapFullCr')) updated.mcapFullCr = bse.mcapFullCr ?? stock.mcapFullCr;
+  if (!isLocked('mcapFfCr')) updated.mcapFfCr = bse.mcapFFCr ?? fund.mcapFFCr ?? stock.mcapFfCr;
+  if (!isLocked('faceValue')) updated.faceValue = bse.faceValue ?? fund.faceValue ?? stock.faceValue;
+  if (!isLocked('bseCategory')) updated.bseCategory = bse.bseCategory ?? bse.category ?? stock.bseCategory;
+  if (!isLocked('bseGroup')) updated.bseGroup = bse.bseGroup ?? bse.group ?? stock.bseGroup;
+  if (!isLocked('bseIndex')) updated.bseIndex = bse.index ?? fund.bseIndex ?? stock.bseIndex;
+  if (!isLocked('basicIndustry')) updated.basicIndustry = bse.basicIndustry ?? fund.basicIndustry ?? stock.basicIndustry;
+  if (!isLocked('latestDividendAmount')) updated.latestDividendAmount = quote?.latestDividend?.amount ?? stock.latestDividendAmount;
+  if (!isLocked('latestDividendExDate')) updated.latestDividendExDate = quote?.latestDividend?.date ?? stock.latestDividendExDate;
+
+  // Intrinsic Value (Fair) & Margin of Safety
+  if (!isLocked('intrinsicValue')) {
+    const eps = updated.epsConsolidated || updated.epsStandalone;
+    const pb = updated.pb;
+    let intrinsic = fund.intrinsicValue;
+    if (!intrinsic && eps && pb && pb > 0 && currentPrice > 0) {
+      const bookValuePerShare = currentPrice / pb;
+      intrinsic = Math.round(Math.sqrt(22.5 * eps * bookValuePerShare) * 100) / 100;
+    }
+    if (intrinsic) {
+      updated.intrinsicValue = intrinsic;
+      if (currentPrice > 0) {
+        updated.marginOfSafety = Math.round(((intrinsic - currentPrice) / intrinsic) * 10000) / 100;
+      }
+    }
+  }
+
+  return updated;
 }

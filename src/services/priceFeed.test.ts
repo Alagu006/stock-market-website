@@ -4,8 +4,9 @@ import {
   getFallbackYahooSymbol,
   isIndianMarketOpen,
   mergeFeedFundamentals,
+  applyFeedToStock,
 } from './priceFeed';
-import type { Fundamentals, LiveQuote } from '../types';
+import type { Stock, Fundamentals, LiveQuote } from '../types';
 
 describe('Price Feed Service & Quality Checks', () => {
   describe('Symbol Mapping', () => {
@@ -286,4 +287,115 @@ describe('Price Feed Service & Quality Checks', () => {
       expect(epsParts[1]).toBe(16.11); // Consolidated EPS
     });
   });
+
+  describe('applyFeedToStock Mapping and Rule Enforcement', () => {
+    it('populates un-locked fundamental and BSE fields, computes Intrinsic Value & Margin of Safety', () => {
+      const stock: Stock = {
+        id: 1,
+        symbol: 'TCS',
+        bseCode: '532540',
+        name: 'Tata Consultancy Services',
+        sector: 'Information Technology',
+        marketCapCategory: 'Large Cap',
+        targetBuyPrice: 3500,
+        createdAt: '2026-01-01',
+      };
+
+      const feedData = {
+        quote: {
+          symbol: 'TCS.NS',
+          shortName: 'TCS',
+          price: 3600,
+          previousClose: 3550,
+          change: 50,
+          changePercent: 1.4,
+          pe: 28.5,
+          dividendYield: 1.8,
+          timestamp: '2026-10-17T00:00:00.000Z',
+        },
+        fundamentals: {
+          roe: 45.2,
+          pbRatio: 12.0,
+          roce: 52.1,
+          debtToEquity: 0.05,
+          evToEbitda: 21.4,
+          salesCagr10Y: 11.5,
+          profitCagr10Y: 13.8,
+        },
+        bseData: {
+          vwap: 3590,
+          epsConsolidated: 126.3,
+          epsStandalone: 120.1,
+          faceValue: 1,
+          basicIndustry: 'IT Services',
+        },
+      };
+
+      const updated = applyFeedToStock(stock, feedData);
+
+      expect(updated.roe).toBe(45.2);
+      expect(updated.pb).toBe(12.0);
+      expect(updated.roce).toBe(52.1);
+      expect(updated.debtToEquity).toBe(0.05);
+      expect(updated.salesCagr10Y).toBe(11.5);
+      expect(updated.profitCagr10Y).toBe(13.8);
+      expect(updated.dividendYield).toBe(1.8);
+      expect(updated.vwap).toBe(3590);
+      expect(updated.epsConsolidated).toBe(126.3);
+      expect(updated.faceValue).toBe(1);
+
+      // Verify Graham Intrinsic Value: sqrt(22.5 * 126.3 * (3600 / 12)) = sqrt(22.5 * 126.3 * 300) = sqrt(852525) = 923.32
+      expect(updated.intrinsicValue).toBeDefined();
+      expect(updated.intrinsicValue).toBeGreaterThan(900);
+      expect(updated.marginOfSafety).toBeDefined();
+    });
+
+    it('respects manual field locks and does not overwrite user-locked values', () => {
+      const stock: Stock = {
+        id: 2,
+        symbol: 'INFY',
+        bseCode: '500209',
+        name: 'Infosys',
+        sector: 'Information Technology',
+        marketCapCategory: 'Large Cap',
+        roe: 30.0,
+        fieldSources: {
+          roe: 'manual',
+        },
+        createdAt: '2026-01-01',
+      };
+
+      const feedData = {
+        fundamentals: {
+          roe: 25.0, // Should be ignored because roe is manually locked
+          pbRatio: 6.5,
+        },
+      };
+
+      const updated = applyFeedToStock(stock, feedData);
+      expect(updated.roe).toBe(30.0); // Preserved
+      expect(updated.pb).toBe(6.5); // Populated
+    });
+
+    it('computes sectorPe fallback from peers sharing same sector', () => {
+      const stock: Stock = {
+        id: 3,
+        symbol: 'WIPRO',
+        bseCode: '507685',
+        name: 'Wipro Ltd',
+        sector: 'IT',
+        marketCapCategory: 'Large Cap',
+        createdAt: '2026-01-01',
+      };
+
+      const peers: Stock[] = [
+        { id: 1, symbol: 'TCS', bseCode: '532540', name: 'TCS', sector: 'IT', marketCapCategory: 'Large Cap', peConsolidated: 30, createdAt: '' },
+        { id: 2, symbol: 'INFY', bseCode: '500209', name: 'INFY', sector: 'IT', marketCapCategory: 'Large Cap', peConsolidated: 20, createdAt: '' },
+      ];
+
+      const updated = applyFeedToStock(stock, {}, peers);
+      expect(updated.sectorPe).toBe(25); // (30 + 20) / 2
+    });
+  });
 });
+

@@ -111,13 +111,22 @@ export const StocksAndPricesView: React.FC<StocksAndPricesViewProps> = ({
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 font-mono">
                         {stock.bseCode}
                       </span>
-                      {fund?.dividendYield && (
+                      {(fund?.dividendYield || stock.dividendYield || stock.latestDividendAmount) && (
                         <span
                           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30"
-                          title="Annual Dividend Yield"
+                          title="Dividend Details"
                         >
                           <Coins className="w-2.5 h-2.5 text-amber-400" />
-                          <span>Div: {fund.dividendYield}%</span>
+                          <span>
+                            {fund?.dividendYield || stock.dividendYield
+                              ? `Div: ${fund?.dividendYield || stock.dividendYield}%`
+                              : ''}
+                            {stock.latestDividendAmount
+                              ? ` • ₹${stock.latestDividendAmount}${
+                                  stock.latestDividendExDate ? ` (Ex: ${stock.latestDividendExDate})` : ''
+                                }`
+                              : ''}
+                          </span>
                         </span>
                       )}
                     </div>

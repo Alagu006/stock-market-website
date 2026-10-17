@@ -229,6 +229,11 @@ export function parseBseMetricsFromParsed(parsedTable) {
     if (key.includes('52 wk low') || key.includes('52w low')) res.low52W = parseFloat(v.replace(/,/g, ''));
     if (key.includes('upper price band') || key.includes('upper band')) res.upperBand = parseFloat(v.replace(/,/g, ''));
     if (key.includes('lower price band') || key.includes('lower band')) res.lowerBand = parseFloat(v.replace(/,/g, ''));
+    if (key === 'price band' || key.includes('price band')) {
+      if (!key.includes('upper') && !key.includes('lower')) res.priceBand = v;
+    }
+    if (key.includes('category')) res.bseCategory = v;
+    if (key.includes('group') || key.includes('settlement')) res.bseGroup = v;
     if (key.includes('ttq (lakh)') || key.includes('ttq')) res.ttqLakh = parseFloat(v.replace(/,/g, ''));
     if (key.includes('turnover (cr.)') || key.includes('turnover')) res.turnoverCr = parseFloat(v.replace(/,/g, ''));
     if (key.includes('2w avg qty')) res.avgQty2WLakh = parseFloat(v.replace(/,/g, ''));
@@ -310,7 +315,18 @@ async function fetchBseData(bseCode, symbol, slug) {
       ),
     ]);
 
-    const comHeader = comHeaderRes.status === 'fulfilled' ? comHeaderRes.value : null;
+    let comHeader = comHeaderRes.status === 'fulfilled' ? comHeaderRes.value : null;
+    if (!comHeader) {
+      // Try ComHeadernew fallback
+      try {
+        comHeader = await fetchWithRetry(
+          `https://api.bseindia.com/BseIndiaAPI/api/ComHeadernew/w?scripcode=${cleanCode}`,
+          { headers: bseHeaders },
+          1,
+          4000
+        );
+      } catch (_) {}
+    }
     const scripHeader = scripHeaderRes.status === 'fulfilled' ? scripHeaderRes.value : null;
 
     const bseObj = {
@@ -319,6 +335,9 @@ async function fetchBseData(bseCode, symbol, slug) {
       faceValue: parsedMetrics.faceValue ?? (comHeader?.FaceVal ? parseFloat(comHeader.FaceVal) : null),
       basicIndustry: parsedMetrics.basicIndustry || comHeader?.IndustryNew || comHeader?.Industry || null,
       index: parsedMetrics.index || comHeader?.Index || comHeader?.Grp_Index || null,
+      bseCategory: parsedMetrics.bseCategory || comHeader?.Category || 'Listed',
+      bseGroup: parsedMetrics.bseGroup || comHeader?.Group || scripHeader?.Header?.Group || 'A / T+1',
+      priceBand: parsedMetrics.priceBand || scripHeader?.Header?.PriceBand || '20%',
       epsStandalone: parsedMetrics.epsStandalone || null,
       epsConsolidated: parsedMetrics.epsConsolidated || null,
       eps: parsedMetrics.eps ?? (comHeader?.EPS && comHeader.EPS !== '-' ? parseFloat(comHeader.EPS) : null),
@@ -338,8 +357,10 @@ async function fetchBseData(bseCode, symbol, slug) {
       vwap: parsedMetrics.vwap || null,
       high52W: parsedMetrics.high52W || null,
       low52W: parsedMetrics.low52W || null,
-      upperBand: parsedMetrics.upperBand || null,
-      lowerBand: parsedMetrics.lowerBand || null,
+      upperBand: parsedMetrics.upperBand || (scripHeader?.Header?.UpperPriceBand ? parseFloat(scripHeader.Header.UpperPriceBand) : null),
+      lowerBand: parsedMetrics.lowerBand || (scripHeader?.Header?.LowerPriceBand ? parseFloat(scripHeader.Header.LowerPriceBand) : null),
+      upperPriceBand: parsedMetrics.upperBand || (scripHeader?.Header?.UpperPriceBand ? parseFloat(scripHeader.Header.UpperPriceBand) : null),
+      lowerPriceBand: parsedMetrics.lowerBand || (scripHeader?.Header?.LowerPriceBand ? parseFloat(scripHeader.Header.LowerPriceBand) : null),
       ttqLakh: parsedMetrics.ttqLakh || null,
       turnoverCr: parsedMetrics.turnoverCr || null,
       avgQty2WLakh: parsedMetrics.avgQty2WLakh || null,
@@ -566,6 +587,36 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
   });
+});
+
+// 1b. BSE Quote Endpoint (Task 2: fetch from BSE India official API / page)
+app.get('/api/bse-quote', async (req, res) => {
+  const scripcode = req.query.scripcode || req.query.bseCode;
+  if (!scripcode || typeof scripcode !== 'string') {
+    return res.status(400).json({ error: 'Missing "scripcode" query parameter' });
+  }
+
+  const cleanCode = scripcode.trim();
+  const symbol = (req.query.symbol || '').trim();
+  const slug = (req.query.slug || '').trim();
+
+  const cacheKey = `bse_quote_${cleanCode}`;
+  const cached = getCached(cacheKey);
+  if (cached) {
+    return res.json(cached);
+  }
+
+  try {
+    const data = await fetchBseData(cleanCode, symbol, slug);
+    if (!data) {
+      return res.status(404).json({ error: `BSE data not found for scripcode ${cleanCode}` });
+    }
+    setCached(cacheKey, data);
+    res.json(data);
+  } catch (err) {
+    console.error(`[BSE Quote] Error for ${cleanCode}:`, err.message);
+    res.status(500).json({ error: 'Failed to fetch BSE quote', message: err.message });
+  }
 });
 
 // 2. Live Quotes Endpoint

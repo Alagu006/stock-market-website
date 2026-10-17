@@ -628,12 +628,12 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
                 {mergedFund.stockPE ? `${mergedFund.stockPE}x` : '—'}
               </span>
               <span className="text-[11px] text-slate-400">
-                / {mergedFund.sectorPE ? `${mergedFund.sectorPE}x` : '24.5x'}
+                / {selectedStock.sectorPe ? `${selectedStock.sectorPe.toFixed(2)}x` : mergedFund.sectorPE ? `${mergedFund.sectorPE.toFixed(2)}x` : '—'}
               </span>
             </div>
             <span className="text-[10px] text-slate-500 block mt-0.5">
-              {mergedFund.stockPE && (mergedFund.sectorPE || 24.5)
-                ? mergedFund.stockPE < (mergedFund.sectorPE || 24.5)
+              {mergedFund.stockPE && (selectedStock.sectorPe || mergedFund.sectorPE)
+                ? mergedFund.stockPE < (selectedStock.sectorPe || mergedFund.sectorPE!)
                   ? '✓ Discount vs Sector'
                   : 'Premium vs Sector'
                 : 'P/E multiple'}
@@ -750,71 +750,219 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
         </div>
       </div>
 
-      {/* TASK 1: Dedicated BSE Exchange Data Card */}
-      <div className="bg-[#111827] border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+      {/* TASK 1: Dedicated BSE Official Exchange Card (5 Tables matching BSE Terminal) */}
+      <div className="bg-[#111827] border border-slate-800 rounded-xl p-5 shadow-sm space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
           <div className="flex items-center gap-2">
             <Building2 className="w-4 h-4 text-emerald-400" />
             <h3 className="text-xs font-bold uppercase tracking-wider text-white">
-              BSE India Official Exchange Data
+              BSE India Official Exchange Terminal Data
             </h3>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
               Scrip: {selectedStock.bseCode}
             </span>
+            <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+              Group: {bseData?.bseGroup || selectedStock.bseGroup || 'A / T+1'}
+            </span>
           </div>
-          <span className="text-[11px] text-slate-400">Direct BSE Terminal Extraction</span>
+          <span className="text-[11px] text-slate-400">Direct Terminal Scrape & Official API Extraction</span>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
-            <span className="text-[11px] text-slate-400 block">VWAP</span>
-            <span className="text-sm font-bold text-white tabular-nums">
-              {mergedFund.vwap ? formatINR(mergedFund.vwap) : latestPrice ? formatINR(latestPrice) : '—'}
+        {/* 5 Distinct BSE Tables Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3.5 text-xs">
+          {/* Table 1: Session Prices */}
+          <div className="bg-slate-950/70 rounded-xl border border-slate-800/80 p-3.5 space-y-2.5">
+            <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider block border-b border-slate-800/80 pb-1">
+              1. Session Prices
             </span>
+            <div className="space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Prev Close:</span>
+                <span className="font-bold text-white tabular-nums">
+                  {bseData?.previousClose ? formatINR(bseData.previousClose) : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Open:</span>
+                <span className="font-bold text-white tabular-nums">
+                  {bseData?.open ? formatINR(bseData.open) : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Day High:</span>
+                <span className="font-bold text-emerald-400 tabular-nums">
+                  {bseData?.high ? formatINR(bseData.high) : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Day Low:</span>
+                <span className="font-bold text-rose-400 tabular-nums">
+                  {bseData?.low ? formatINR(bseData.low) : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between pt-1 border-t border-slate-900">
+                <span className="text-slate-400">VWAP:</span>
+                <span className="font-bold text-emerald-400 tabular-nums">
+                  {mergedFund.vwap ? formatINR(mergedFund.vwap) : latestPrice ? formatINR(latestPrice) : '—'}
+                </span>
+              </div>
+            </div>
           </div>
-          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
-            <span className="text-[11px] text-slate-400 block">EPS (Stand. / Consol.)</span>
-            <span className="text-sm font-bold text-slate-200 tabular-nums">
-              {mergedFund.epsStandalone ? `₹${mergedFund.epsStandalone}` : '—'} /{' '}
-              {mergedFund.epsConsolidated ? `₹${mergedFund.epsConsolidated}` : '—'}
+
+          {/* Table 2: 52-Week & Bands */}
+          <div className="bg-slate-950/70 rounded-xl border border-slate-800/80 p-3.5 space-y-2.5">
+            <span className="text-[11px] font-bold text-teal-400 uppercase tracking-wider block border-b border-slate-800/80 pb-1">
+              2. 52W & Price Bands
             </span>
+            <div className="space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-slate-400">52W High:</span>
+                <span className="font-bold text-white tabular-nums">
+                  {mergedFund.high52W ? formatINR(mergedFund.high52W) : bseData?.high52W ? formatINR(bseData.high52W) : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">52W Low:</span>
+                <span className="font-bold text-white tabular-nums">
+                  {mergedFund.low52W ? formatINR(mergedFund.low52W) : bseData?.low52W ? formatINR(bseData.low52W) : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Upper Band:</span>
+                <span className="font-bold text-emerald-400 tabular-nums">
+                  {mergedFund.upperBand ? formatINR(mergedFund.upperBand) : bseData?.upperBand ? formatINR(bseData.upperBand) : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Lower Band:</span>
+                <span className="font-bold text-rose-400 tabular-nums">
+                  {mergedFund.lowerBand ? formatINR(mergedFund.lowerBand) : bseData?.lowerBand ? formatINR(bseData.lowerBand) : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between pt-1 border-t border-slate-900">
+                <span className="text-slate-400">Price Band:</span>
+                <span className="font-bold text-slate-200">
+                  {bseData?.priceBand || selectedStock.priceBand || '20%'}
+                </span>
+              </div>
+            </div>
           </div>
-          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
-            <span className="text-[11px] text-slate-400 block">CEPS (Cash EPS)</span>
-            <span className="text-sm font-bold text-emerald-400 tabular-nums">
-              {mergedFund.ceps ? `₹${mergedFund.ceps}` : '—'}
+
+          {/* Table 3: Volume & Liquidity */}
+          <div className="bg-slate-950/70 rounded-xl border border-slate-800/80 p-3.5 space-y-2.5">
+            <span className="text-[11px] font-bold text-amber-400 uppercase tracking-wider block border-b border-slate-800/80 pb-1">
+              3. Volume & Mcap
             </span>
+            <div className="space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-slate-400">TTQ (Lakh):</span>
+                <span className="font-bold text-white tabular-nums">
+                  {bseData?.ttqLakh ? `${bseData.ttqLakh} L` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Turnover:</span>
+                <span className="font-bold text-white tabular-nums">
+                  {bseData?.turnoverCr ? `₹${bseData.turnoverCr} Cr` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">2W Avg Qty:</span>
+                <span className="font-bold text-white tabular-nums">
+                  {mergedFund.avgQty2WLakh ? `${mergedFund.avgQty2WLakh} L` : bseData?.avgQty2WLakh ? `${bseData.avgQty2WLakh} L` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Mcap Full:</span>
+                <span className="font-bold text-slate-200 tabular-nums truncate max-w-[90px]">
+                  {bseData?.mcapFullCr ? `₹${Math.round(bseData.mcapFullCr).toLocaleString('en-IN')} Cr` : mergedFund.marketCapCr ? `₹${mergedFund.marketCapCr} Cr` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between pt-1 border-t border-slate-900">
+                <span className="text-slate-400">Mcap FF:</span>
+                <span className="font-bold text-emerald-400 tabular-nums truncate max-w-[90px]">
+                  {mergedFund.mcapFFCr ? `₹${Math.round(mergedFund.mcapFFCr).toLocaleString('en-IN')} Cr` : bseData?.mcapFFCr ? `₹${Math.round(bseData.mcapFFCr)} Cr` : '—'}
+                </span>
+              </div>
+            </div>
           </div>
-          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
-            <span className="text-[11px] text-slate-400 block">Mcap Free Float</span>
-            <span className="text-sm font-bold text-white tabular-nums">
-              {mergedFund.mcapFFCr ? `₹${mergedFund.mcapFFCr.toLocaleString('en-IN')} Cr` : '—'}
+
+          {/* Table 4: Earnings & Multiples */}
+          <div className="bg-slate-950/70 rounded-xl border border-slate-800/80 p-3.5 space-y-2.5">
+            <span className="text-[11px] font-bold text-blue-400 uppercase tracking-wider block border-b border-slate-800/80 pb-1">
+              4. Valuation & Multiples
             </span>
+            <div className="space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-slate-400">EPS (TTM):</span>
+                <span className="font-bold text-white tabular-nums">
+                  {mergedFund.epsStandalone ? `₹${mergedFund.epsStandalone}` : '—'} /{' '}
+                  {mergedFund.epsConsolidated ? `₹${mergedFund.epsConsolidated}` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">CEPS (Cash):</span>
+                <span className="font-bold text-emerald-400 tabular-nums">
+                  {mergedFund.ceps ? `₹${mergedFund.ceps}` : bseData?.ceps ? `₹${bseData.ceps}` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">BSE P/E:</span>
+                <span className="font-bold text-white tabular-nums">
+                  {bseData?.peStandalone ? `${bseData.peStandalone}x` : '—'} /{' '}
+                  {bseData?.peConsolidated ? `${bseData.peConsolidated}x` : mergedFund.stockPE ? `${mergedFund.stockPE}x` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">ROE:</span>
+                <span className="font-bold text-emerald-400 tabular-nums">
+                  {mergedFund.roe ? `${mergedFund.roe}%` : bseData?.roe ? `${bseData.roe}%` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between pt-1 border-t border-slate-900">
+                <span className="text-slate-400">Price/Book:</span>
+                <span className="font-bold text-white tabular-nums">
+                  {mergedFund.pbRatio ? `${mergedFund.pbRatio}x` : bseData?.pbRatio ? `${bseData.pbRatio}x` : '—'}
+                </span>
+              </div>
+            </div>
           </div>
-          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
-            <span className="text-[11px] text-slate-400 block">2W Avg Qty</span>
-            <span className="text-sm font-bold text-white tabular-nums">
-              {mergedFund.avgQty2WLakh ? `${mergedFund.avgQty2WLakh} Lakh` : '—'}
+
+          {/* Table 5: Scrip Profile */}
+          <div className="bg-slate-950/70 rounded-xl border border-slate-800/80 p-3.5 space-y-2.5">
+            <span className="text-[11px] font-bold text-purple-400 uppercase tracking-wider block border-b border-slate-800/80 pb-1">
+              5. Scrip Profile
             </span>
-          </div>
-          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
-            <span className="text-[11px] text-slate-400 block">Face Value</span>
-            <span className="text-sm font-bold text-slate-200 tabular-nums">
-              {mergedFund.faceValue ? `₹${mergedFund.faceValue}` : '₹10'}
-            </span>
-          </div>
-          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
-            <span className="text-[11px] text-slate-400 block">Basic Industry</span>
-            <span className="text-sm font-bold text-white truncate block">
-              {mergedFund.basicIndustry || selectedStock.sector}
-            </span>
-          </div>
-          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/80">
-            <span className="text-[11px] text-slate-400 block">Price Bands (L / U)</span>
-            <span className="text-sm font-bold text-slate-200 tabular-nums">
-              {mergedFund.lowerBand ? `₹${mergedFund.lowerBand}` : '—'} /{' '}
-              {mergedFund.upperBand ? `₹${mergedFund.upperBand}` : '—'}
-            </span>
+            <div className="space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Face Value:</span>
+                <span className="font-bold text-white tabular-nums">
+                  {mergedFund.faceValue ? `₹${mergedFund.faceValue}` : bseData?.faceValue ? `₹${bseData.faceValue}` : '₹1.00'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Category:</span>
+                <span className="font-bold text-slate-300">
+                  {bseData?.bseCategory || selectedStock.bseCategory || 'Listed'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Index:</span>
+                <span className="font-bold text-slate-300 truncate max-w-[80px]" title={mergedFund.bseIndex || bseData?.index || 'BSE SENSEX'}>
+                  {mergedFund.bseIndex || bseData?.index || 'BSE 500'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Industry:</span>
+                <span className="font-bold text-white truncate max-w-[80px]" title={mergedFund.basicIndustry || selectedStock.sector}>
+                  {mergedFund.basicIndustry || selectedStock.sector}
+                </span>
+              </div>
+              <div className="flex justify-between pt-1 border-t border-slate-900">
+                <span className="text-slate-400">Settlement:</span>
+                <span className="font-bold text-emerald-400">T+1 Rolling</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>

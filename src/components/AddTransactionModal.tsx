@@ -148,6 +148,15 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
         }).catch(() => {});
       }
 
+      const finalBrokerage = isManualChargesOverride
+        ? Math.round(numCharges * 0.5 * 100) / 100
+        : nseCharges.brokerage;
+      const finalSttAndCharges = Math.max(0, Math.round((numCharges - finalBrokerage) * 100) / 100);
+      const finalNetAmount =
+        type === 'BUY'
+          ? Math.round((numQty * numPrice + numCharges) * 100) / 100
+          : Math.round((numQty * numPrice - numCharges) * 100) / 100;
+
       await onAddTransaction({
         stockId: Number(stockId),
         symbol: selectedStock?.symbol || '',
@@ -156,6 +165,10 @@ export const AddTransactionModal: React.FC<AddTransactionModalProps> = ({
         quantity: numQty,
         price: numPrice,
         charges: numCharges,
+        brokerage: finalBrokerage,
+        sttAndCharges: finalSttAndCharges,
+        totalCharges: numCharges,
+        netAmount: finalNetAmount,
         note: note.trim() || undefined,
       });
       onClose();

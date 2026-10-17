@@ -18,6 +18,42 @@ export interface Stock {
   watchlist?: boolean;
   targetBuyPrice?: number;
   thesisNote?: string;
+  // Extra BSE & Fundamental fields
+  sectorPe?: number;
+  vwap?: number;
+  epsStandalone?: number;
+  epsConsolidated?: number;
+  cepsStandalone?: number;
+  cepsConsolidated?: number;
+  peStandalone?: number;
+  peConsolidated?: number;
+  upperPriceBand?: number;
+  lowerPriceBand?: number;
+  priceBand?: string;
+  ttqLakh?: number;
+  turnoverCr?: number;
+  twoWeekAvgQtyLakh?: number;
+  mcapFullCr?: number;
+  mcapFfCr?: number;
+  faceValue?: number;
+  bseCategory?: string;
+  bseGroup?: string;
+  bseIndex?: string;
+  basicIndustry?: string;
+  latestDividendAmount?: number;
+  latestDividendExDate?: string;
+  stockedgeId?: string;
+  roe?: number;
+  pb?: number;
+  roce?: number;
+  debtToEquity?: number;
+  evToEbitda?: number;
+  salesCagr10Y?: number;
+  profitCagr10Y?: number;
+  dividendYield?: number;
+  intrinsicValue?: number;
+  marginOfSafety?: number;
+  fieldSources?: Record<string, 'manual' | 'screener' | 'feed'>;
   createdAt: string; // ISO date string
 }
 
@@ -30,6 +66,10 @@ export interface Transaction {
   quantity: number;
   price: number; // Purchase / Sale price per share
   charges?: number; // Brokerage, STT, exchange charges, etc.
+  brokerage?: number;
+  sttAndCharges?: number;
+  totalCharges?: number;
+  netAmount?: number;
   note?: string;
   createdAt: string;
 }

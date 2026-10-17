@@ -58,7 +58,7 @@ export function adjustTransactionsForCorporateActions(
       }
     }
 
-    const charges = tx.charges || 0;
+    const charges = tx.totalCharges !== undefined ? tx.totalCharges : (tx.charges || 0);
     // For a BUY, charges increase the cost basis per share
     // For a SELL, charges decrease the net realization per share
     const effectivePricePerShare =
