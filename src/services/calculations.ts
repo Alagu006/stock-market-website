@@ -1,0 +1,884 @@
+import type {
+  Stock,
+  Transaction,
+  CorporateAction,
+  PriceRecord,
+  Fundamentals,
+  CostMethod,
+  HoldingCalculation,
+  PortfolioKPIs,
+  SectorAllocation,
+  LotHistoryItem,
+} from '../types';
+import { isDateOlderThanDays } from '../utils/formatters';
+
+export interface AdjustedTransaction {
+  id?: number;
+  stockId: number;
+  symbol: string;
+  type: 'BUY' | 'SELL';
+  date: string;
+  originalQuantity: number;
+  originalPrice: number;
+  quantity: number; // Adjusted for corporate actions prior to ex-date
+  price: number; // Adjusted for corporate actions prior to ex-date
+  charges: number;
+  effectivePricePerShare: number; // Including charges for BUY, deducting charges for SELL
+  note?: string;
+  createdAt?: string;
+}
+
+/**
+ * Adjust transactions based on Corporate Actions (Splits and Bonuses).
+ * Corporate actions are applied to transactions that occurred STRICTLY BEFORE the action's exDate.
+ * Ratio: fromFactor -> toFactor.
+ * e.g., Split 1:2 -> multiplier = 2 / 1 = 2.
+ * Quantity is multiplied by multiplier, Price is divided by multiplier.
+ */
+export function adjustTransactionsForCorporateActions(
+  transactions: Transaction[],
+  corporateActions: CorporateAction[]
+): AdjustedTransaction[] {
+  // Sort actions chronologically by exDate
+  const sortedActions = [...corporateActions].sort((a, b) => a.exDate.localeCompare(b.exDate));
+
+  return transactions.map((tx) => {
+    let adjQty = tx.quantity;
+    let adjPrice = tx.price;
+
+    for (const ca of sortedActions) {
+      if (ca.stockId === tx.stockId && tx.date < ca.exDate) {
+        if (ca.fromFactor > 0 && ca.toFactor > 0) {
+          const multiplier = ca.toFactor / ca.fromFactor;
+          adjQty = Math.round(adjQty * multiplier * 10000) / 10000;
+          adjPrice = adjPrice / multiplier;
+        }
+      }
+    }
+
+    const charges = tx.charges || 0;
+    // For a BUY, charges increase the cost basis per share
+    // For a SELL, charges decrease the net realization per share
+    const effectivePricePerShare =
+      tx.type === 'BUY'
+        ? adjPrice + (adjQty > 0 ? charges / adjQty : 0)
+        : adjPrice - (adjQty > 0 ? charges / adjQty : 0);
+
+    return {
+      id: tx.id,
+      stockId: tx.stockId,
+      symbol: tx.symbol,
+      type: tx.type,
+      date: tx.date,
+      originalQuantity: tx.quantity,
+      originalPrice: tx.price,
+      quantity: adjQty,
+      price: adjPrice,
+      charges,
+      effectivePricePerShare,
+      note: tx.note,
+      createdAt: tx.createdAt,
+    };
+  });
+}
+
+/**
+ * Validates whether a proposed sell transaction is valid (cannot sell more than held on that date).
+ */
+export function validateSellQuantity(
+  stockId: number,
+  sellDate: string,
+  sellQty: number,
+  allTransactions: Transaction[],
+  corporateActions: CorporateAction[]
+): { isValid: boolean; maxAllowed: number; error?: string } {
+  const adjusted = adjustTransactionsForCorporateActions(
+    allTransactions.filter((tx) => tx.stockId === stockId),
+    corporateActions
+  );
+
+  // Filter transactions up to and including the sellDate, sorted chronologically
+  const sorted = adjusted
+    .filter((tx) => tx.date <= sellDate)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  let currentHolding = 0;
+  for (const tx of sorted) {
+    if (tx.type === 'BUY') {
+      currentHolding += tx.quantity;
+    } else if (tx.type === 'SELL') {
+      currentHolding -= tx.quantity;
+    }
+  }
+
+  if (sellQty <= 0) {
+    return { isValid: false, maxAllowed: Math.max(0, currentHolding), error: 'Quantity must be greater than zero.' };
+  }
+
+  if (sellQty > currentHolding) {
+    return {
+      isValid: false,
+      maxAllowed: Math.max(0, currentHolding),
+      error: `Cannot sell ${sellQty} shares. Maximum shares held on ${sellDate} is ${currentHolding}.`,
+    };
+  }
+
+  return { isValid: true, maxAllowed: currentHolding };
+}
+
+/**
+ * FIFO Lot Interface
+ */
+interface FIFOLot {
+  txId?: number;
+  date: string;
+  originalQty: number;
+  remainingQty: number;
+  effectivePrice: number;
+  charges: number;
+}
+
+/**
+ * Calculates stock position, lot history, and realized P&L using either 'Average Cost' or 'FIFO'.
+ */
+export function calculateStockPosition(
+  stockId: number,
+  allTransactions: Transaction[],
+  corporateActions: CorporateAction[],
+  costMethod: CostMethod = 'Average Cost'
+): {
+  quantity: number;
+  averageBuyPrice: number;
+  totalCostBasis: number;
+  realizedPnL: number;
+  lotHistory: LotHistoryItem[];
+  activeLotsCount: number;
+} {
+  const stockTxs = allTransactions.filter((t) => t.stockId === stockId);
+  const adjustedTxs = adjustTransactionsForCorporateActions(stockTxs, corporateActions);
+
+  // Sort chronologically by date; if same date, BUY precedes SELL
+  const sorted = [...adjustedTxs].sort((a, b) => {
+    const dComp = a.date.localeCompare(b.date);
+    if (dComp !== 0) return dComp;
+    if (a.type === b.type) return (a.id || 0) - (b.id || 0);
+    return a.type === 'BUY' ? -1 : 1;
+  });
+
+  const originalTxMap = new Map<number, Transaction>();
+  stockTxs.forEach((tx) => {
+    if (tx.id !== undefined) originalTxMap.set(tx.id, tx);
+  });
+
+  let runningShares = 0;
+  let runningRealizedPnL = 0;
+  const lotHistory: LotHistoryItem[] = [];
+
+  if (costMethod === 'Average Cost') {
+    let runningAveragePrice = 0;
+
+    for (const tx of sorted) {
+      const orig = tx.id ? originalTxMap.get(tx.id) : undefined;
+      const originalTx: Transaction = orig || {
+        stockId: tx.stockId,
+        symbol: tx.symbol,
+        type: tx.type,
+        date: tx.date,
+        quantity: tx.originalQuantity,
+        price: tx.originalPrice,
+        charges: tx.charges,
+        note: tx.note,
+        createdAt: tx.createdAt || tx.date,
+      };
+
+      if (tx.type === 'BUY') {
+        const totalOldCost = runningShares * runningAveragePrice;
+        const totalNewCost = tx.quantity * tx.effectivePricePerShare;
+        runningShares += tx.quantity;
+        runningAveragePrice = runningShares > 0 ? (totalOldCost + totalNewCost) / runningShares : 0;
+
+        lotHistory.push({
+          transaction: originalTx,
+          adjustedQuantity: tx.quantity,
+          adjustedPrice: tx.price,
+          runningShares,
+          runningWeightedAvg: runningAveragePrice,
+          remainingQuantity: tx.quantity,
+        });
+      } else {
+        // SELL
+        const sellRealized = tx.quantity * (tx.effectivePricePerShare - runningAveragePrice);
+        runningRealizedPnL += sellRealized;
+        runningShares = Math.max(0, runningShares - tx.quantity);
+
+        lotHistory.push({
+          transaction: originalTx,
+          adjustedQuantity: tx.quantity,
+          adjustedPrice: tx.price,
+          runningShares,
+          runningWeightedAvg: runningAveragePrice,
+          realizedPnL: sellRealized,
+        });
+      }
+    }
+
+    const totalCostBasis = runningShares * runningAveragePrice;
+
+    return {
+      quantity: runningShares,
+      averageBuyPrice: runningShares > 0 ? runningAveragePrice : 0,
+      totalCostBasis,
+      realizedPnL: runningRealizedPnL,
+      lotHistory,
+      activeLotsCount: runningShares > 0 ? 1 : 0,
+    };
+  } else {
+    // FIFO Method
+    const buyLots: FIFOLot[] = [];
+
+    for (const tx of sorted) {
+      const orig = tx.id ? originalTxMap.get(tx.id) : undefined;
+      const originalTx: Transaction = orig || {
+        stockId: tx.stockId,
+        symbol: tx.symbol,
+        type: tx.type,
+        date: tx.date,
+        quantity: tx.originalQuantity,
+        price: tx.originalPrice,
+        charges: tx.charges,
+        note: tx.note,
+        createdAt: tx.createdAt || tx.date,
+      };
+
+      if (tx.type === 'BUY') {
+        buyLots.push({
+          txId: tx.id,
+          date: tx.date,
+          originalQty: tx.quantity,
+          remainingQty: tx.quantity,
+          effectivePrice: tx.effectivePricePerShare,
+          charges: tx.charges,
+        });
+        runningShares += tx.quantity;
+
+        lotHistory.push({
+          transaction: originalTx,
+          adjustedQuantity: tx.quantity,
+          adjustedPrice: tx.price,
+          runningShares,
+          remainingQuantity: tx.quantity,
+        });
+      } else {
+        // SELL consumes FIFO lots
+        let qtyToConsume = tx.quantity;
+        let sellRealized = 0;
+        const consumedLots: LotHistoryItem['consumedLots'] = [];
+
+        for (const lot of buyLots) {
+          if (qtyToConsume <= 0) break;
+          if (lot.remainingQty <= 0) continue;
+
+          const take = Math.min(lot.remainingQty, qtyToConsume);
+          const pnlForLot = take * (tx.effectivePricePerShare - lot.effectivePrice);
+          sellRealized += pnlForLot;
+          lot.remainingQty -= take;
+          qtyToConsume -= take;
+
+          consumedLots.push({
+            buyTxId: lot.txId,
+            buyDate: lot.date,
+            qtyTaken: take,
+            buyPrice: lot.effectivePrice,
+            realizedPnL: pnlForLot,
+          });
+        }
+
+        runningRealizedPnL += sellRealized;
+        runningShares = Math.max(0, runningShares - tx.quantity);
+
+        lotHistory.push({
+          transaction: originalTx,
+          adjustedQuantity: tx.quantity,
+          adjustedPrice: tx.price,
+          runningShares,
+          consumedLots,
+          realizedPnL: sellRealized,
+        });
+      }
+    }
+
+    // Remaining cost basis under FIFO
+    let remainingCostBasis = 0;
+    let remainingShares = 0;
+    let activeLotsCount = 0;
+
+    for (const lot of buyLots) {
+      if (lot.remainingQty > 0) {
+        remainingCostBasis += lot.remainingQty * lot.effectivePrice;
+        remainingShares += lot.remainingQty;
+        activeLotsCount++;
+      }
+    }
+
+    const fifoAveragePrice = remainingShares > 0 ? remainingCostBasis / remainingShares : 0;
+
+    // Update remainingQuantity on BUY history items
+    const remainingQtyByTxId = new Map<number | undefined, number>();
+    buyLots.forEach((l) => {
+      remainingQtyByTxId.set(l.txId, l.remainingQty);
+    });
+
+    lotHistory.forEach((item) => {
+      if (item.transaction.type === 'BUY' && item.transaction.id !== undefined) {
+        item.remainingQuantity = remainingQtyByTxId.get(item.transaction.id) ?? 0;
+      }
+    });
+
+    return {
+      quantity: remainingShares,
+      averageBuyPrice: fifoAveragePrice,
+      totalCostBasis: remainingCostBasis,
+      realizedPnL: runningRealizedPnL,
+      lotHistory,
+      activeLotsCount,
+    };
+  }
+}
+
+/**
+ * Calculates live 4-Card Preview when typing a BUY or SELL form entry.
+ */
+export function calculateLivePreview(
+  stock: Stock,
+  currentPrice: number,
+  allTransactions: Transaction[],
+  corporateActions: CorporateAction[],
+  costMethod: CostMethod,
+  pending: {
+    type: 'BUY' | 'SELL';
+    date: string;
+    quantity: number;
+    price: number;
+    charges?: number;
+  }
+) {
+  const currentPos = calculateStockPosition(stock.id!, allTransactions, corporateActions, costMethod);
+  const qty = pending.quantity || 0;
+  const price = pending.price || 0;
+  const charges = pending.charges || 0;
+
+  if (qty <= 0 || price <= 0) {
+    return {
+      existing: {
+        shares: currentPos.quantity,
+        averagePrice: currentPos.averageBuyPrice,
+        invested: currentPos.totalCostBasis,
+      },
+      thisTx: {
+        type: pending.type,
+        shares: qty,
+        price,
+        charges,
+        totalAmount: qty * price + charges,
+      },
+      postAverage: {
+        newAveragePrice: currentPos.averageBuyPrice,
+        diffVsOld: 0,
+      },
+      postPosition: {
+        shares: currentPos.quantity,
+        invested: currentPos.totalCostBasis,
+        currentValue: currentPos.quantity * currentPrice,
+        unrealizedPnL: currentPos.quantity * currentPrice - currentPos.totalCostBasis,
+        unrealizedPnLPercent:
+          currentPos.totalCostBasis > 0
+            ? ((currentPos.quantity * currentPrice - currentPos.totalCostBasis) / currentPos.totalCostBasis) * 100
+            : 0,
+      },
+      isValid: true,
+    };
+  }
+
+  // Check validation for SELL
+  let isValid = true;
+  let validationError: string | undefined;
+
+  if (pending.type === 'SELL') {
+    const val = validateSellQuantity(stock.id!, pending.date, qty, allTransactions, corporateActions);
+    if (!val.isValid) {
+      isValid = false;
+      validationError = val.error;
+    }
+  }
+
+  // Create mock transaction
+  const mockTx: Transaction = {
+    stockId: stock.id!,
+    symbol: stock.symbol,
+    type: pending.type,
+    date: pending.date,
+    quantity: qty,
+    price,
+    charges,
+    createdAt: new Date().toISOString(),
+  };
+
+  const simulatedTxs = [...allTransactions, mockTx];
+  const postPos = calculateStockPosition(stock.id!, simulatedTxs, corporateActions, costMethod);
+
+  const totalAmount = pending.type === 'BUY' ? qty * price + charges : qty * price - charges;
+  const diffVsOld = postPos.averageBuyPrice - currentPos.averageBuyPrice;
+  const postMarketValue = postPos.quantity * currentPrice;
+  const postUnrealized = postMarketValue - postPos.totalCostBasis;
+  const postUnrealizedPct = postPos.totalCostBasis > 0 ? (postUnrealized / postPos.totalCostBasis) * 100 : 0;
+
+  return {
+    existing: {
+      shares: currentPos.quantity,
+      averagePrice: currentPos.averageBuyPrice,
+      invested: currentPos.totalCostBasis,
+    },
+    thisTx: {
+      type: pending.type,
+      shares: qty,
+      price,
+      charges,
+      totalAmount,
+    },
+    postAverage: {
+      newAveragePrice: postPos.averageBuyPrice,
+      diffVsOld,
+    },
+    postPosition: {
+      shares: postPos.quantity,
+      invested: postPos.totalCostBasis,
+      currentValue: postMarketValue,
+      unrealizedPnL: postUnrealized,
+      unrealizedPnLPercent: postUnrealizedPct,
+    },
+    isValid,
+    validationError,
+  };
+}
+
+/**
+ * Reverse Target-Average ("Buy the Dip") Calculator:
+ * exact shares = ceil(CurrentQty * (CurrentAvg - TargetAvg) / (TargetAvg - PlannedPrice))
+ */
+export function calculateReverseTargetAverage(
+  currentQty: number,
+  currentAvg: number,
+  targetAvg: number,
+  plannedPrice: number
+): {
+  isValid: boolean;
+  requiredShares: number;
+  capitalRequired: number;
+  newAveragePrice: number;
+  error?: string;
+} {
+  if (currentQty <= 0 || currentAvg <= 0) {
+    return {
+      isValid: false,
+      requiredShares: 0,
+      capitalRequired: 0,
+      newAveragePrice: 0,
+      error: 'Current holding quantity and average price must be greater than zero.',
+    };
+  }
+
+  if (targetAvg >= currentAvg) {
+    return {
+      isValid: false,
+      requiredShares: 0,
+      capitalRequired: 0,
+      newAveragePrice: 0,
+      error: 'Target average price must be strictly lower than current average price.',
+    };
+  }
+
+  if (plannedPrice >= targetAvg) {
+    return {
+      isValid: false,
+      requiredShares: 0,
+      capitalRequired: 0,
+      newAveragePrice: 0,
+      error: 'Planned buy price must be strictly lower than the desired target average price.',
+    };
+  }
+
+  const denominator = targetAvg - plannedPrice;
+  const numerator = currentQty * (currentAvg - targetAvg);
+  const exactShares = Math.ceil(numerator / denominator);
+  const capitalRequired = exactShares * plannedPrice;
+
+  // Verify new actual average after buying exactShares at plannedPrice
+  const totalShares = currentQty + exactShares;
+  const totalCost = currentQty * currentAvg + capitalRequired;
+  const newAveragePrice = totalShares > 0 ? totalCost / totalShares : 0;
+
+  return {
+    isValid: true,
+    requiredShares: exactShares,
+    capitalRequired,
+    newAveragePrice,
+  };
+}
+
+/**
+ * Aggregate all active holdings, calculating P&L, ROCE, P/E, Dividend, Stale badge, etc.
+ */
+export function calculateAllHoldings(
+  stocks: Stock[],
+  transactions: Transaction[],
+  corporateActions: CorporateAction[],
+  priceRecords: PriceRecord[],
+  fundamentalsList: Fundamentals[],
+  costMethod: CostMethod = 'Average Cost'
+): HoldingCalculation[] {
+  // Map latest prices and previous price
+  const priceMap = new Map<number, { latestPrice: number; latestDate: string; prevPrice?: number }>();
+
+  // Sort prices chronologically
+  const sortedPrices = [...priceRecords].sort((a, b) => {
+    const dComp = a.date.localeCompare(b.date);
+    if (dComp !== 0) return dComp;
+    return (a.id || 0) - (b.id || 0);
+  });
+
+  for (const pr of sortedPrices) {
+    const existing = priceMap.get(pr.stockId);
+    if (!existing) {
+      priceMap.set(pr.stockId, { latestPrice: pr.price, latestDate: pr.date });
+    } else {
+      priceMap.set(pr.stockId, {
+        latestPrice: pr.price,
+        latestDate: pr.date,
+        prevPrice: existing.latestPrice,
+      });
+    }
+  }
+
+  // Fundamentals map
+  const fundMap = new Map<number, Fundamentals>();
+  fundamentalsList.forEach((f) => fundMap.set(f.stockId, f));
+
+  const holdings: HoldingCalculation[] = [];
+
+  for (const stock of stocks) {
+    if (!stock.id) continue;
+    const pos = calculateStockPosition(stock.id, transactions, corporateActions, costMethod);
+
+    // We only display active holdings (quantity > 0) in the Holdings table
+    if (pos.quantity <= 0) continue;
+
+    const priceInfo = priceMap.get(stock.id);
+    const currentPrice = priceInfo ? priceInfo.latestPrice : pos.averageBuyPrice;
+    const lastPriceDate = priceInfo ? priceInfo.latestDate : null;
+    const isPriceStale = isDateOlderThanDays(lastPriceDate, 7);
+
+    const currentValue = pos.quantity * currentPrice;
+    const unrealizedPnL = currentValue - pos.totalCostBasis;
+    const unrealizedPnLPercent = pos.totalCostBasis > 0 ? (unrealizedPnL / pos.totalCostBasis) * 100 : 0;
+
+    const fund = fundMap.get(stock.id);
+    const expectedDiv = stock.expectedDividendPerShare || 0;
+    const annualDividendIncome = pos.quantity * expectedDiv;
+    const yieldOnCost = pos.totalCostBasis > 0 ? (annualDividendIncome / pos.totalCostBasis) * 100 : 0;
+
+    let priceChange: number | undefined;
+    let priceChangePercent: number | undefined;
+    if (priceInfo && priceInfo.prevPrice !== undefined && priceInfo.prevPrice > 0) {
+      priceChange = currentPrice - priceInfo.prevPrice;
+      priceChangePercent = ((currentPrice - priceInfo.prevPrice) / priceInfo.prevPrice) * 100;
+    }
+
+    holdings.push({
+      stock,
+      quantity: pos.quantity,
+      averageBuyPrice: pos.averageBuyPrice,
+      totalInvested: pos.totalCostBasis,
+      currentPrice,
+      lastPriceDate,
+      isPriceStale,
+      currentValue,
+      unrealizedPnL,
+      unrealizedPnLPercent,
+      realizedPnL: pos.realizedPnL,
+      annualDividendIncome,
+      yieldOnCost,
+      roce: fund?.roce ?? null,
+      pe: fund?.stockPE ?? null,
+      lotsCount: pos.activeLotsCount,
+      previousPrice: priceInfo?.prevPrice,
+      priceChange,
+      priceChangePercent,
+    });
+  }
+
+  // Sort by currentValue descending by default
+  return holdings.sort((a, b) => b.currentValue - a.currentValue);
+}
+
+/**
+ * Calculates Portfolio KPIs
+ */
+export function calculatePortfolioKPIs(
+  holdings: HoldingCalculation[],
+  stocks: Stock[],
+  transactions: Transaction[],
+  corporateActions: CorporateAction[],
+  costMethod: CostMethod
+): PortfolioKPIs {
+  let totalInvested = 0;
+  let currentValue = 0;
+  let annualDividendIncome = 0;
+  let dayChangeValue = 0;
+
+  for (const h of holdings) {
+    totalInvested += h.totalInvested;
+    currentValue += h.currentValue;
+    annualDividendIncome += h.annualDividendIncome;
+
+    if (h.previousPrice !== undefined) {
+      dayChangeValue += h.quantity * (h.currentPrice - h.previousPrice);
+    }
+  }
+
+  const unrealizedPnL = currentValue - totalInvested;
+  const unrealizedPnLPercent = totalInvested > 0 ? (unrealizedPnL / totalInvested) * 100 : 0;
+  const dayChangePercent = currentValue > 0 && currentValue !== dayChangeValue ? (dayChangeValue / (currentValue - dayChangeValue)) * 100 : 0;
+  const portfolioYieldOnCost = totalInvested > 0 ? (annualDividendIncome / totalInvested) * 100 : 0;
+
+  // Realized P&L across ALL stocks (including closed positions)
+  let totalRealizedPnL = 0;
+  for (const stock of stocks) {
+    if (!stock.id) continue;
+    const pos = calculateStockPosition(stock.id, transactions, corporateActions, costMethod);
+    totalRealizedPnL += pos.realizedPnL;
+  }
+
+  // Value-weighted ROCE
+  let weightedRoceSum = 0;
+  let valueForRoce = 0;
+  for (const h of holdings) {
+    if (h.roce !== null && h.roce !== undefined && !isNaN(h.roce)) {
+      weightedRoceSum += h.roce * h.currentValue;
+      valueForRoce += h.currentValue;
+    }
+  }
+  const valueWeightedROCE = valueForRoce > 0 ? weightedRoceSum / valueForRoce : null;
+
+  // Value-weighted P/E (Harmonic mean is standard for portfolio PE: Total Value / Sum(Value / PE))
+  let peEarningsSum = 0;
+  let valueForPE = 0;
+  for (const h of holdings) {
+    if (h.pe !== null && h.pe !== undefined && h.pe > 0) {
+      peEarningsSum += h.currentValue / h.pe;
+      valueForPE += h.currentValue;
+    }
+  }
+  const valueWeightedPE = peEarningsSum > 0 ? valueForPE / peEarningsSum : null;
+
+  return {
+    totalInvested,
+    currentValue,
+    unrealizedPnL,
+    unrealizedPnLPercent,
+    realizedPnL: totalRealizedPnL,
+    dayChangeValue,
+    dayChangePercent,
+    annualDividendIncome,
+    portfolioYieldOnCost,
+    valueWeightedROCE,
+    valueWeightedPE,
+  };
+}
+
+/**
+ * Calculates sector breakdown and flags concentration above 35%
+ */
+export function calculateSectorAllocations(holdings: HoldingCalculation[]): SectorAllocation[] {
+  const sectorMap = new Map<string, { invested: number; current: number }>();
+  let totalCurrentVal = 0;
+
+  for (const h of holdings) {
+    const sec = h.stock.sector?.trim() || 'Others';
+    const curr = sectorMap.get(sec) || { invested: 0, current: 0 };
+    curr.invested += h.totalInvested;
+    curr.current += h.currentValue;
+    sectorMap.set(sec, curr);
+    totalCurrentVal += h.currentValue;
+  }
+
+  const results: SectorAllocation[] = [];
+  sectorMap.forEach((val, sector) => {
+    const weightPercent = totalCurrentVal > 0 ? (val.current / totalCurrentVal) * 100 : 0;
+    results.push({
+      sector,
+      investedValue: val.invested,
+      currentValue: val.current,
+      weightPercent,
+      isConcentrated: weightPercent > 35,
+    });
+  });
+
+  return results.sort((a, b) => b.currentValue - a.currentValue);
+}
+
+/**
+ * XIRR (Extended Internal Rate of Return) calculation via Newton-Raphson method
+ * Cashflow: { date: YYYY-MM-DD, amount: number }
+ * Negative = outflow (buying), Positive = inflow (selling, dividends, or final portfolio terminal value)
+ */
+export function calculateXIRR(cashflows: Array<{ date: string; amount: number }>, guess: number = 0.1): number | null {
+  if (cashflows.length < 2) return null;
+
+  // Filter out zero amount flows
+  const validFlows = cashflows.filter((cf) => Math.abs(cf.amount) > 0.001);
+  const hasNegative = validFlows.some((cf) => cf.amount < 0);
+  const hasPositive = validFlows.some((cf) => cf.amount > 0);
+  if (!hasNegative || !hasPositive) return null;
+
+  // Sort cashflows chronologically
+  const sorted = [...validFlows].sort((a, b) => a.date.localeCompare(b.date));
+  const t0 = new Date(sorted[0].date).getTime();
+
+  const getYears = (dateStr: string) => {
+    const t = new Date(dateStr).getTime();
+    return (t - t0) / (1000 * 60 * 60 * 24 * 365);
+  };
+
+  const npv = (rate: number) => {
+    return sorted.reduce((sum, cf) => {
+      const years = getYears(cf.date);
+      return sum + cf.amount / Math.pow(1 + rate, years);
+    }, 0);
+  };
+
+  const derivativeNpv = (rate: number) => {
+    return sorted.reduce((sum, cf) => {
+      const years = getYears(cf.date);
+      return sum - (years * cf.amount) / Math.pow(1 + rate, years + 1);
+    }, 0);
+  };
+
+  let rate = guess;
+  const maxIterations = 100;
+  const tolerance = 1e-6;
+
+  for (let i = 0; i < maxIterations; i++) {
+    if (rate <= -1) rate = -0.9999;
+    const value = npv(rate);
+    const dVal = derivativeNpv(rate);
+
+    if (Math.abs(dVal) < 1e-10) break;
+
+    const nextRate = rate - value / dVal;
+    if (Math.abs(nextRate - rate) < tolerance) {
+      return nextRate * 100; // in %
+    }
+    rate = nextRate;
+  }
+
+  return isFinite(rate) ? rate * 100 : null;
+}
+
+/**
+ * Tax Classification (STCG vs LTCG) - Always uses FIFO matching
+ * STCG: Holding period <= 365 days (12 months or less)
+ * LTCG: Holding period > 365 days
+ */
+export interface TaxSaleRecord {
+  sellTxId?: number;
+  symbol: string;
+  sellDate: string;
+  buyDate: string;
+  quantity: number;
+  sellPrice: number;
+  buyPrice: number;
+  holdingDays: number;
+  gainOrLoss: number;
+  term: 'STCG' | 'LTCG';
+  financialYear: string;
+}
+
+export function classifyTaxLots(
+  allTransactions: Transaction[],
+  corporateActions: CorporateAction[]
+): TaxSaleRecord[] {
+  // Tax view ALWAYS uses FIFO
+  const groupedByStock = new Map<number, Transaction[]>();
+  allTransactions.forEach((tx) => {
+    const arr = groupedByStock.get(tx.stockId) || [];
+    arr.push(tx);
+    groupedByStock.set(tx.stockId, arr);
+  });
+
+  const taxRecords: TaxSaleRecord[] = [];
+
+  groupedByStock.forEach((txs) => {
+    const adjusted = adjustTransactionsForCorporateActions(txs, corporateActions);
+    const sorted = [...adjusted].sort((a, b) => {
+      const dComp = a.date.localeCompare(b.date);
+      if (dComp !== 0) return dComp;
+      return a.type === 'BUY' ? -1 : 1;
+    });
+
+    const buyLots: FIFOLot[] = [];
+
+    for (const tx of sorted) {
+      if (tx.type === 'BUY') {
+        buyLots.push({
+          txId: tx.id,
+          date: tx.date,
+          originalQty: tx.quantity,
+          remainingQty: tx.quantity,
+          effectivePrice: tx.effectivePricePerShare,
+          charges: tx.charges,
+        });
+      } else {
+        // SELL
+        let qtyToMatch = tx.quantity;
+        const sellDate = new Date(tx.date);
+
+        for (const lot of buyLots) {
+          if (qtyToMatch <= 0) break;
+          if (lot.remainingQty <= 0) continue;
+
+          const taken = Math.min(lot.remainingQty, qtyToMatch);
+          lot.remainingQty -= taken;
+          qtyToMatch -= taken;
+
+          const buyDate = new Date(lot.date);
+          const diffMs = sellDate.getTime() - buyDate.getTime();
+          const holdingDays = Math.max(0, Math.round(diffMs / (1000 * 60 * 60 * 24)));
+
+          const term: 'STCG' | 'LTCG' = holdingDays <= 365 ? 'STCG' : 'LTCG';
+          const gainOrLoss = taken * (tx.effectivePricePerShare - lot.effectivePrice);
+
+          // Determine FY
+          const month = sellDate.getMonth() + 1;
+          const year = sellDate.getFullYear();
+          const fy = month >= 4 ? `FY ${year}-${String(year + 1).slice(-2)}` : `FY ${year - 1}-${String(year).slice(-2)}`;
+
+          taxRecords.push({
+            sellTxId: tx.id,
+            symbol: tx.symbol,
+            sellDate: tx.date,
+            buyDate: lot.date,
+            quantity: taken,
+            sellPrice: tx.effectivePricePerShare,
+            buyPrice: lot.effectivePrice,
+            holdingDays,
+            gainOrLoss,
+            term,
+            financialYear: fy,
+          });
+        }
+      }
+    }
+  });
+
+  return taxRecords.sort((a, b) => b.sellDate.localeCompare(a.sellDate));
+}
