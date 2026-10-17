@@ -200,13 +200,17 @@ export async function searchLiveSymbols(query: string): Promise<
 /**
  * Fetch Corporate Events (Dividends & Splits) for a symbol
  */
-export async function fetchCorporateEvents(symbol: string): Promise<CorporateEventData | null> {
+export async function fetchCorporateEvents(
+  symbol: string,
+  bseCode?: string
+): Promise<CorporateEventData | null> {
   if (!symbol) return null;
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
+    const bseParam = bseCode ? `&bseCode=${encodeURIComponent(bseCode.trim())}` : '';
     const res = await fetch(
-      `${PROXY_BASE_URL}/api/events?symbol=${encodeURIComponent(symbol.trim())}`,
+      `${PROXY_BASE_URL}/api/events?symbol=${encodeURIComponent(symbol.trim())}${bseParam}`,
       { signal: controller.signal }
     );
     clearTimeout(timeout);

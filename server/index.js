@@ -1056,25 +1056,20 @@ app.get('/api/search', async (req, res) => {
 // 5. Corporate Events (Dividends & Splits) for a symbol
 app.get('/api/events', async (req, res) => {
   const symbol = req.query.symbol;
+  const bseCode = req.query.bseCode;
   if (!symbol || typeof symbol !== 'string') {
     return res.status(400).json({ error: 'Missing "symbol" parameter' });
   }
 
-  const cacheKey = `events_${symbol}`;
+  const clean = symbol.replace(/\.(NS|BO)$/i, '').trim().toUpperCase();
+  const cacheKey = `events_${clean}_${bseCode || ''}`;
   const cached = getCached(cacheKey);
   if (cached) {
     return res.json(cached);
   }
 
-  try {
-    const targetSymbol = formatYahooSymbol(symbol);
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
-      targetSymbol
-    )}?interval=1d&range=2y&events=div,split`;
-    const data = await fetchWithRetry(url);
-    const chart = data?.chart?.result?.[0];
+  const parseEventsFromChart = (chart) => {
     const events = chart?.events || {};
-
     const dividends = [];
     if (events.dividends) {
       for (const [timestamp, item] of Object.entries(events.dividends)) {
@@ -1098,15 +1093,57 @@ app.get('/api/events', async (req, res) => {
         });
       }
     }
+    return { dividends, splits };
+  };
 
-    dividends.sort((a, b) => b.date.localeCompare(a.date));
-    splits.sort((a, b) => b.date.localeCompare(a.date));
+  try {
+    const targetSymbol = formatYahooSymbol(symbol);
+    const candidateSymbols = [targetSymbol];
+    if (bseCode && /^\d{6}$/.test(bseCode.trim())) {
+      candidateSymbols.push(`${bseCode.trim()}.BO`);
+    }
+    if (!candidateSymbols.includes(`${clean}.BO`)) {
+      candidateSymbols.push(`${clean}.BO`);
+    }
+
+    let bestDividends = [];
+    let bestSplits = [];
+    let usedSymbol = targetSymbol;
+
+    for (const cand of candidateSymbols) {
+      try {
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
+          cand
+        )}?interval=1d&range=2y&events=div,split`;
+        const data = await fetchWithRetry(url);
+        const chart = data?.chart?.result?.[0];
+        if (chart) {
+          const parsed = parseEventsFromChart(chart);
+          if (parsed.dividends.length > bestDividends.length) {
+            bestDividends = parsed.dividends;
+            usedSymbol = cand;
+          }
+          if (parsed.splits.length > bestSplits.length) {
+            bestSplits = parsed.splits;
+            usedSymbol = cand;
+          }
+          if (bestDividends.length > 0 || bestSplits.length > 0) {
+            break;
+          }
+        }
+      } catch (err) {
+        // Continue to fallback candidate
+      }
+    }
+
+    bestDividends.sort((a, b) => b.date.localeCompare(a.date));
+    bestSplits.sort((a, b) => b.date.localeCompare(a.date));
 
     const payload = {
-      symbol,
-      targetSymbol,
-      dividends,
-      splits,
+      symbol: clean,
+      targetSymbol: usedSymbol,
+      dividends: bestDividends,
+      splits: bestSplits,
       timestamp: new Date().toISOString(),
     };
 

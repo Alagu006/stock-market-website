@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Bell,
   Coins,
@@ -8,6 +8,8 @@ import {
   CheckCircle2,
   Loader2,
   RotateCcw,
+  RefreshCw,
+  FileText,
 } from 'lucide-react';
 import type {
   Stock,
@@ -15,9 +17,10 @@ import type {
   CorporateAction,
   HoldingCalculation,
   CorporateEventData,
+  StockEdgeNewsItem,
 } from '../types';
 import { formatINR, formatDateDDMMYYYY } from '../utils/formatters';
-import { fetchCorporateEvents } from '../services/priceFeed';
+import { fetchCorporateEvents, fetchStockEdgeNews } from '../services/priceFeed';
 
 interface CorporateActionsFeedViewProps {
   stocks: Stock[];
@@ -38,9 +41,11 @@ export const CorporateActionsFeedView: React.FC<CorporateActionsFeedViewProps> =
   onAddCorporateAction,
   onDeleteCorporateAction,
 }) => {
-  const [filterMode, setFilterMode] = useState<'holdings' | 'all'>('holdings');
+  const [filterMode, setFilterMode] = useState<'holdings' | 'all'>(holdings.length > 0 ? 'holdings' : 'all');
   const [loading, setLoading] = useState(false);
   const [eventsMap, setEventsMap] = useState<Map<string, CorporateEventData>>(new Map());
+  const [announcements, setAnnouncements] = useState<Array<{ symbol: string; item: StockEdgeNewsItem }>>([]);
+  const [refreshIndex, setRefreshIndex] = useState(0);
 
   // Dividend record modal state
   const [recordingDiv, setRecordingDiv] = useState<{
@@ -56,38 +61,55 @@ export const CorporateActionsFeedView: React.FC<CorporateActionsFeedViewProps> =
   const targetStocks = useMemo(() => {
     if (filterMode === 'holdings') {
       const holdingStockIds = new Set(holdings.map((h) => h.stock.id));
-      return stocks.filter((s) => s.id && holdingStockIds.has(s.id));
+      const filtered = stocks.filter((s) => s.id && holdingStockIds.has(s.id));
+      return filtered.length > 0 ? filtered : stocks;
     }
     return stocks;
   }, [stocks, holdings, filterMode]);
 
-  // Fetch events for target stocks
-  useEffect(() => {
-    let isMounted = true;
+  // Fetch events & announcements concurrently in chunks
+  const loadEvents = useCallback(async () => {
     if (targetStocks.length === 0) return;
+    setLoading(true);
 
-    const loadEvents = async () => {
-      setLoading(true);
-      const newMap = new Map<string, CorporateEventData>();
+    const newEventsMap = new Map<string, CorporateEventData>();
+    const newAnnouncements: Array<{ symbol: string; item: StockEdgeNewsItem }> = [];
 
-      for (const stock of targetStocks.slice(0, 15)) {
-        const events = await fetchCorporateEvents(stock.symbol);
-        if (events && isMounted) {
-          newMap.set(stock.symbol.toUpperCase(), events);
-        }
-      }
+    const stockSlice = targetStocks.slice(0, 20);
+    const chunks: Stock[][] = [];
+    for (let i = 0; i < stockSlice.length; i += 5) {
+      chunks.push(stockSlice.slice(i, i + 5));
+    }
 
-      if (isMounted) {
-        setEventsMap(newMap);
-        setLoading(false);
-      }
-    };
+    for (const chunk of chunks) {
+      await Promise.all(
+        chunk.map(async (st) => {
+          try {
+            const [ev, news] = await Promise.all([
+              fetchCorporateEvents(st.symbol, st.bseCode),
+              fetchStockEdgeNews(st.symbol),
+            ]);
+            if (ev) {
+              newEventsMap.set(st.symbol.toUpperCase(), ev);
+            }
+            if (news && news.items && news.items.length > 0) {
+              news.items.forEach((item) => {
+                newAnnouncements.push({ symbol: st.symbol, item });
+              });
+            }
+          } catch {}
+        })
+      );
+    }
 
-    loadEvents();
-    return () => {
-      isMounted = false;
-    };
+    setEventsMap(newEventsMap);
+    setAnnouncements(newAnnouncements);
+    setLoading(false);
   }, [targetStocks]);
+
+  useEffect(() => {
+    loadEvents();
+  }, [loadEvents, refreshIndex]);
 
   // Aggregate detected dividends
   const detectedDividends = useMemo(() => {
@@ -98,15 +120,18 @@ export const CorporateActionsFeedView: React.FC<CorporateActionsFeedViewProps> =
       amountPerShare: number;
       estimatedPayout: number;
       isAlreadyRecorded: boolean;
+      sourceLabel?: string;
     }> = [];
 
     for (const stock of targetStocks) {
       const ev = eventsMap.get(stock.symbol.toUpperCase());
       const holding = holdings.find((h) => h.stock.id === stock.id);
       const qty = holding?.quantity || 0;
+      let count = 0;
 
-      if (ev && ev.dividends) {
+      if (ev && ev.dividends && ev.dividends.length > 0) {
         for (const div of ev.dividends.slice(0, 5)) {
+          count++;
           const already = existingDividends.some(
             (ed) => ed.stockId === stock.id && ed.date === div.date
           );
@@ -118,8 +143,26 @@ export const CorporateActionsFeedView: React.FC<CorporateActionsFeedViewProps> =
             amountPerShare: div.amount,
             estimatedPayout: qty * div.amount,
             isAlreadyRecorded: already,
+            sourceLabel: 'Exchange Live',
           });
         }
+      }
+
+      // Fallback: If no event returned, but stock has verified dividend on master record
+      if (count === 0 && stock.latestDividendAmount && stock.latestDividendAmount > 0) {
+        const divDate = stock.latestDividendExDate || new Date().toISOString().split('T')[0];
+        const already = existingDividends.some(
+          (ed) => ed.stockId === stock.id && ed.date === divDate
+        );
+        list.push({
+          stock,
+          holdingQty: qty,
+          date: divDate,
+          amountPerShare: stock.latestDividendAmount,
+          estimatedPayout: qty * stock.latestDividendAmount,
+          isAlreadyRecorded: already,
+          sourceLabel: 'BSE Direct',
+        });
       }
     }
 
@@ -213,33 +256,44 @@ export const CorporateActionsFeedView: React.FC<CorporateActionsFeedViewProps> =
           </p>
         </div>
 
-        {/* Filter Toggle */}
-        <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800">
+        {/* Filter Toggle & Refresh */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800">
+            <button
+              onClick={() => setFilterMode('holdings')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                filterMode === 'holdings'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              My Holdings ({holdings.length})
+            </button>
+            <button
+              onClick={() => setFilterMode('all')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                filterMode === 'all'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              All Tracked Stocks ({stocks.length})
+            </button>
+          </div>
+
           <button
-            onClick={() => setFilterMode('holdings')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-              filterMode === 'holdings'
-                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                : 'text-slate-400 hover:text-white'
-            }`}
+            onClick={() => setRefreshIndex((k) => k + 1)}
+            disabled={loading}
+            className="p-2 bg-slate-950 hover:bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-emerald-400 rounded-xl transition-all disabled:opacity-50"
+            title="Refresh corporate actions feed"
           >
-            My Holdings ({holdings.length})
-          </button>
-          <button
-            onClick={() => setFilterMode('all')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-              filterMode === 'all'
-                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            All Tracked Stocks ({stocks.length})
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-emerald-400' : ''}`} />
           </button>
         </div>
       </div>
 
       {loading && (
-        <div className="p-4 bg-slate-900/80 rounded-xl border border-slate-800 flex items-center justify-center gap-2 text-xs text-slate-400">
+        <div className="p-4 bg-slate-900/80 rounded-xl border border-slate-800 flex items-center justify-center gap-2 text-xs text-slate-400 animate-pulse">
           <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
           <span>Fetching recent corporate filings & announcements from live feed...</span>
         </div>
@@ -273,6 +327,11 @@ export const CorporateActionsFeedView: React.FC<CorporateActionsFeedViewProps> =
                     <span className="text-[10px] font-mono text-slate-400 bg-slate-950 px-1 rounded border border-slate-800">
                       Ex-Date: {formatDateDDMMYYYY(item.date)}
                     </span>
+                    {item.sourceLabel && (
+                      <span className="text-[9px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        {item.sourceLabel}
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-slate-300 mt-1">
                     Payout: <strong className="text-emerald-400">{formatINR(item.amountPerShare)}</strong> per share
@@ -386,6 +445,57 @@ export const CorporateActionsFeedView: React.FC<CorporateActionsFeedViewProps> =
           )}
         </div>
       </div>
+
+      {/* Corporate Announcements & Regulatory Updates Section */}
+      {announcements.length > 0 && (
+        <div className="bg-slate-900/80 p-5 rounded-2xl border border-slate-800 space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <FileText className="w-4 h-4 text-emerald-400" />
+              Live Corporate Announcements & Filings ({announcements.length})
+            </h3>
+            <span className="text-[11px] text-slate-400">StockEdge & BSE Announcements Feed</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {announcements.slice(0, 8).map((ann, idx) => (
+              <div
+                key={`${ann.symbol}_ann_${idx}`}
+                className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 hover:border-slate-700 transition-all flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <span className="font-bold text-white text-xs px-2 py-0.5 rounded bg-slate-900 border border-slate-800">
+                      {ann.symbol}
+                    </span>
+                    <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                      {ann.item.category || 'Announcement'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-200 line-clamp-2 leading-relaxed">
+                    {ann.item.headline}
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between mt-3 pt-2 border-t border-slate-900 text-[11px] text-slate-400">
+                  <span>{ann.item.date} {ann.item.time ? `• ${ann.item.time}` : ''}</span>
+                  {ann.item.url && (
+                    <a
+                      href={ann.item.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-emerald-400 hover:text-emerald-300 font-semibold inline-flex items-center gap-1"
+                    >
+                      <span>Read Filing</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Official Exchange Filings Direct Links Section */}
       <div className="bg-slate-900/80 p-5 rounded-2xl border border-slate-800 space-y-3">
