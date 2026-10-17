@@ -1022,7 +1022,7 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
                       'Market Cap Category': s.marketCapCategory,
                       'ISIN': s.isin || '',
                     }));
-                    exportSingleSheetCSV(rows, 'dalal-diarys-stocks.csv');
+                    exportSingleSheetCSV(rows, 'dalal-diary-stocks.csv');
                   }}
                   className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 flex items-center justify-center gap-1.5 transition-all"
                 >
@@ -1056,7 +1056,7 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
                       'Unrealized P&L': h.unrealizedPnL,
                       'P&L %': h.unrealizedPnLPercent,
                     }));
-                    exportSingleSheetCSV(rows, 'dalal-diarys-holdings.csv');
+                    exportSingleSheetCSV(rows, 'dalal-diary-holdings.csv');
                   }}
                   className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 flex items-center justify-center gap-1.5 transition-all"
                 >
@@ -1087,7 +1087,7 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
                       'Charges': t.charges || 0,
                       'Note': t.note || '',
                     }));
-                    exportSingleSheetCSV(rows, 'dalal-diarys-transactions.csv');
+                    exportSingleSheetCSV(rows, 'dalal-diary-transactions.csv');
                   }}
                   className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 flex items-center justify-center gap-1.5 transition-all"
                 >
@@ -1114,7 +1114,7 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
                       'Price': p.price,
                       'Date': p.date,
                     }));
-                    exportSingleSheetCSV(rows, 'dalal-diarys-prices.csv');
+                    exportSingleSheetCSV(rows, 'dalal-diary-prices.csv');
                   }}
                   className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 flex items-center justify-center gap-1.5 transition-all"
                 >

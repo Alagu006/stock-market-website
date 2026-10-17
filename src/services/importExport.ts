@@ -627,8 +627,12 @@ export function exportMultiSheetExcel(
   XLSX.utils.book_append_sheet(wb, wsTax, 'Realized PnL & Tax');
 
   // Generate buffer and trigger download
-  const dateStr = new Date().toISOString().split('T')[0];
-  XLSX.writeFile(wb, `dalal-diarys-portfolio-${dateStr}.xlsx`);
+  const now = new Date();
+  const day = String(now.getDate()).padStart(2, '0');
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const year = now.getFullYear();
+  const dateStr = `${day}-${month}-${year}`;
+  XLSX.writeFile(wb, `dalal-diary-portfolio-${dateStr}.xlsx`);
 }
 
 export function exportSingleSheetCSV(data: Record<string, any>[], filename: string) {

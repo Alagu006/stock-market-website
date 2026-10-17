@@ -157,14 +157,14 @@ Because Dalal Diary's stores data in your browser's IndexedDB, clearing your bro
 ### Creating a Backup
 1. Click the **Backup** button in the top navigation bar.
 2. Under **One-Click JSON Export**, click **Download Backup**.
-3. A timestamped file named `dalal-diarys-backup-YYYY-MM-DD.json` will be saved to your Downloads folder.
+3. A timestamped file named `dalal-diary-backup-DD-MM-YYYY.json` will be saved to your Downloads folder.
 4. Keep this file in a safe folder or cloud drive (Google Drive, iCloud, Dropbox).
 5. The top bar backup alert badge will reset. If 14 days pass without an export, an alert badge will remind you to back up.
 
 ### Restoring from Backup
 1. Click the **Backup** button in the top navigation bar.
 2. Under **Restore from Backup**, click **Choose JSON Backup File** and select your `.json` backup file.
-3. Review the preview confirmation showing the backup date and record counts.
+3. Review the preview confirmation showing the backup date and record counts. Old backups created with any earlier versions remain 100% backward compatible.
 4. Click **Yes, Restore Backup** to restore your portfolio.
 
 ---
@@ -172,8 +172,8 @@ Because Dalal Diary's stores data in your browser's IndexedDB, clearing your bro
 ## 📋 Project Roadmap
 
 - [x] **Phase 1: Portfolio Core** *(Stock master list, manual prices, live 4-card preview, KPI dashboard, holdings table, lot history, Reverse Target-Average calculator, sector allocation, JSON backup/restore)*
-- [ ] **Phase 2: Excel / CSV Import & Export** *(BSE/NSE stock importer, transaction importer, Screener.in mapping & fundamentals parser, Excel/CSV multi-sheet exporter)*
-- [ ] **Phase 3: Analysis** *(Fundamental X-Ray 12-metric grid, 52W range bar, Coffee Can / Undervalued / Dividend scanners, passive alert badges)*
-- [ ] **Phase 4: Returns, Tax & Dividends** *(XIRR, benchmark vs Nifty 50, FY realized P&L, Budget 2024 STCG/LTCG tax view with grandfathering, dividend calendar & corporate action management)*
-- [ ] **Phase 5: Planning Tools** *(Buy-Zone Watchlist, SIP + Lump Sum + DRIP multi-year simulator)*
-- [ ] **Phase 6: Optional Cloud Sync** *(Optional Supabase local-first sync between phone and laptop)*
+- [x] **Phase 2: Excel / CSV Import & Export** *(BSE/NSE stock importer, transaction importer, Screener.in mapping & fundamentals parser, Excel/CSV multi-sheet exporter)*
+- [x] **Phase 3: Analysis** *(Fundamental X-Ray 12-metric grid, 52W range bar, Coffee Can / Undervalued / Dividend scanners, passive alert badges)*
+- [x] **Phase 4: Returns, Tax & Dividends** *(XIRR, benchmark vs Nifty 50, FY realized P&L, Budget 2024 STCG/LTCG tax view with grandfathering, dividend calendar & corporate action management)*
+- [x] **Phase 5: Planning Tools** *(Buy-Zone Watchlist, SIP + Lump Sum + DRIP multi-year simulator)*
+- [x] **Phase 6: Settings & Architecture Polish** *(Settings modal, Budget 2024 tax rates, optional Supabase cloud sync toggle)*

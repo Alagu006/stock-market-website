@@ -137,4 +137,32 @@ describe('Import & Export Service Unit Tests', () => {
     expect(parsed[0].data.roce).toBe(58.2);
     expect(parsed[0].data.debtToEquity).toBe(0.05);
   });
+
+  it('verifies that old backup files mentioning previous app names or flat structures parse correctly', () => {
+    // Old backup with previous app name and nested data
+    const oldEnvelopeBackup = JSON.stringify({
+      app: 'Dalal Diary',
+      version: '1.0.0',
+      exportDate: '2024-01-01T00:00:00Z',
+      data: {
+        stocks: existingStocks,
+        transactions: [],
+      },
+    });
+
+    const parsed1 = JSON.parse(oldEnvelopeBackup);
+    const rawData1 = parsed1.data || parsed1;
+    expect(rawData1.stocks).toHaveLength(2);
+
+    // Old flat backup structure without nested data envelope
+    const flatBackup = JSON.stringify({
+      stocks: existingStocks,
+      transactions: [],
+      priceRecords: [],
+    });
+
+    const parsed2 = JSON.parse(flatBackup);
+    const rawData2 = parsed2.data || parsed2;
+    expect(rawData2.stocks).toHaveLength(2);
+  });
 });

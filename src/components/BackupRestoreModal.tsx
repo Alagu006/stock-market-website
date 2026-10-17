@@ -36,10 +36,14 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
       const jsonStr = await exportDatabaseBackupJSON();
       const blob = new Blob([jsonStr], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
+      const now = new Date();
+      const day = String(now.getDate()).padStart(2, '0');
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const year = now.getFullYear();
+      const dateTag = `${day}-${month}-${year}`;
       const a = document.createElement('a');
-      const dateTag = new Date().toISOString().split('T')[0];
       a.href = url;
-      a.download = `dalal-diarys-backup-${dateTag}.json`;
+      a.download = `dalal-diary-backup-${dateTag}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

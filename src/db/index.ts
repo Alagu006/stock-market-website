@@ -11,6 +11,12 @@ import type {
   CostMethod,
 } from '../types';
 
+/**
+ * CRITICAL ARCHITECTURAL REQUIREMENT:
+ * DO NOT rename or recreate this IndexedDB database name ('DalalDiaryDB').
+ * Keeping this exact name ensures existing user portfolios, transactions,
+ * and historical prices remain 100% intact across all upgrades and updates.
+ */
 export class DalalDiaryDB extends Dexie {
   stocks!: Table<Stock, number>;
   transactions!: Table<Transaction, number>;
@@ -22,6 +28,7 @@ export class DalalDiaryDB extends Dexie {
   settings!: Table<AppSettings, number>;
 
   constructor() {
+    // Preserve 'DalalDiaryDB' database name for complete backward data compatibility
     super('DalalDiaryDB');
     this.version(1).stores({
       stocks: '++id, &symbol, bseCode, name, sector, marketCapCategory, watchlist',
@@ -197,8 +204,10 @@ export async function exportDatabaseBackupJSON(): Promise<string> {
 export async function restoreDatabaseFromJSON(jsonStr: string, mode: 'overwrite' | 'merge' = 'overwrite'): Promise<{ success: boolean; message: string; counts: Record<string, number> }> {
   try {
     const parsed = JSON.parse(jsonStr);
-    if (!parsed || !parsed.data) {
-      throw new Error('Invalid backup file format: missing "data" key.');
+    // Support both standard envelope { app: ..., data: { ... } } and direct/legacy formats
+    const rawData = parsed?.data || parsed;
+    if (!rawData || typeof rawData !== 'object') {
+      throw new Error('Invalid backup file format: file does not contain valid portfolio data.');
     }
 
     const {
@@ -210,7 +219,7 @@ export async function restoreDatabaseFromJSON(jsonStr: string, mode: 'overwrite'
       fundamentals = [],
       benchmarkRecords = [],
       settings = [],
-    } = parsed.data;
+    } = rawData;
 
     await db.transaction('rw', [
       db.stocks,
