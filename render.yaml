@@ -1,0 +1,31 @@
+services:
+  # 1. Price Proxy Web Service (Node.js Express)
+  - type: web
+    name: stock-market-api
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node index.js
+    plan: free
+    envVars:
+      - key: PORT
+        value: 3001
+      - key: FRONTEND_ORIGIN
+        value: "*"
+
+  # 2. Portfolio Frontend (Static Site)
+  - type: web
+    name: stock-market-ui
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_PRICE_SERVER_URL
+        fromService:
+          type: web
+          name: stock-market-api
+          property: host
