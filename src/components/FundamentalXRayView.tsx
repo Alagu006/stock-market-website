@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Activity,
   ThumbsUp,
@@ -28,7 +28,6 @@ import {
   fetchStockEdgeNews,
   fetchCorporateEvents,
 } from '../services/priceFeed';
-import { db } from '../db';
 
 interface FundamentalXRayViewProps {
   stocks: Stock[];
@@ -127,44 +126,30 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
     }
   }, [selectedStock]);
 
+  const lastFetchedStockKeyRef = useRef<string>('');
+
   // Fetch enriched fundamentals, BSE data, and Corporate Events whenever selected stock changes
   useEffect(() => {
-    if (!selectedStock) return;
+    if (!selectedStock?.id || !selectedStock?.symbol) return;
+    const stockKey = `${selectedStock.id}_${selectedStock.symbol.toUpperCase()}_${selectedStock.bseCode || ''}`;
+    if (lastFetchedStockKeyRef.current === stockKey) {
+      return;
+    }
+    lastFetchedStockKeyRef.current = stockKey;
+
     let isCurrent = true;
     setIsLoadingFund(true);
 
     const sym = selectedStock.symbol;
     const bse = selectedStock.bseCode;
+    const priceHint = latestPrice;
 
     // 1. Fetch Enriched Fundamentals (BSE + Yahoo + Graham Intrinsic Value)
-    fetchStockFundamentals(sym, bse, latestPrice)
+    fetchStockFundamentals(sym, bse, priceHint)
       .then((res) => {
         if (!isCurrent || !res) return;
         setEnrichedFund(res.fundamentals);
         setBseData(res.bseData);
-
-        // Auto-persist live BSE price into db.priceRecords if not already recorded today
-        const liveLtp = res.bseData?.ltp || res.bseData?.previousClose;
-        if (liveLtp && liveLtp > 0 && selectedStock.id) {
-          const todayDate = new Date().toISOString().split('T')[0];
-          db.priceRecords
-            .where('stockId')
-            .equals(selectedStock.id)
-            .filter((p: PriceRecord) => p.date === todayDate)
-            .first()
-            .then((existing: PriceRecord | undefined) => {
-              if (!existing && selectedStock.id) {
-                db.priceRecords.add({
-                  stockId: selectedStock.id,
-                  symbol: selectedStock.symbol,
-                  price: liveLtp,
-                  date: todayDate,
-                  createdAt: new Date().toISOString(),
-                });
-              }
-            })
-            .catch(() => {});
-        }
       })
       .catch(() => {})
       .finally(() => {
@@ -172,16 +157,14 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
       });
 
     // 2. Fetch Corporate Events for Latest Dividend Payout & Yield
-    fetchCorporateEvents(sym).then((events) => {
+    fetchCorporateEvents(sym, bse).then((events) => {
       if (!isCurrent || !events) return;
       const divs = events.dividends || [];
       if (divs.length > 0) {
         const latest = divs[0];
-        const estYield = latestPrice > 0 ? Number(((latest.amount / latestPrice) * 100).toFixed(2)) : undefined;
         setDividendInfo({
           amount: latest.amount,
           date: latest.date,
-          yield: estYield,
           history: divs.slice(0, 5),
         });
       }
@@ -190,7 +173,7 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
     return () => {
       isCurrent = false;
     };
-  }, [selectedStock, latestPrice]);
+  }, [selectedStock?.id, selectedStock?.symbol, selectedStock?.bseCode]);
 
   // Merged Fundamentals with zero missing "—"
   const mergedFund = useMemo<Fundamentals>(() => {

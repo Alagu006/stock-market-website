@@ -415,6 +415,13 @@ async function fetchYahooQuoteSummary(symbol) {
     const earningsGrowth = fd.earningsGrowth?.raw ? Number((fd.earningsGrowth.raw * 100).toFixed(2)) : null;
     const trailingEps = ks.trailingEps?.raw || null;
     const bookValue = ks.bookValue?.raw || null;
+    const marketCapRaw = sd.marketCap?.raw || ks.marketCap?.raw || null;
+    const marketCapCr = marketCapRaw ? Math.round(marketCapRaw / 10000000) : null;
+    const pe = sd.trailingPE?.raw
+      ? Number(sd.trailingPE.raw.toFixed(2))
+      : ks.trailingPE?.raw
+      ? Number(ks.trailingPE.raw.toFixed(2))
+      : null;
 
     return {
       roe,
@@ -426,6 +433,8 @@ async function fetchYahooQuoteSummary(symbol) {
       earningsGrowth,
       trailingEps,
       bookValue,
+      marketCapCr,
+      pe,
     };
   } catch (err) {
     return null;
@@ -1239,11 +1248,30 @@ app.get('/api/fundamentals', async (req, res) => {
       }
     }
 
+    const cachedQuote =
+      getCached(`quote_${cleanSymbol}`) ||
+      getCached(`quote_${cleanSymbol}.NS`) ||
+      getCached(`quote_${cleanSymbol}.BO`);
+
+    const marketCapCr =
+      yahooFundamentals?.marketCapCr ??
+      (bseData?.mcapFullCr ? Math.round(bseData.mcapFullCr) : null) ??
+      cachedQuote?.marketCap ??
+      null;
+
+    const stockPE =
+      bseData?.pe ??
+      yahooFundamentals?.pe ??
+      cachedQuote?.pe ??
+      null;
+
     const payload = {
       symbol: cleanSymbol,
       bseCode: bseCode || bseData?.scripCode || null,
       fundamentals: {
         symbol: cleanSymbol,
+        marketCapCr,
+        stockPE,
         roe,
         pbRatio,
         eps,
