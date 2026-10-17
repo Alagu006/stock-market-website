@@ -9,6 +9,7 @@ import type {
   PortfolioKPIs,
   SectorAllocation,
   LotHistoryItem,
+  DividendRecord,
 } from '../types';
 import { isDateOlderThanDays } from '../utils/formatters';
 
@@ -881,4 +882,390 @@ export function classifyTaxLots(
   });
 
   return taxRecords.sort((a, b) => b.sellDate.localeCompare(a.sellDate));
+}
+
+/**
+ * Auto-generate Pros and Cons based on fundamental metrics
+ */
+export function generateProsAndCons(
+  fund: Fundamentals | undefined,
+  currentPrice: number,
+  averageBuyPrice?: number
+): { pros: string[]; cons: string[] } {
+  const pros: string[] = [];
+  const cons: string[] = [];
+
+  if (!fund) {
+    return { pros: ['Stock master active in portfolio'], cons: ['Fundamentals not yet imported'] };
+  }
+
+  // ROCE
+  if (fund.roce !== undefined && fund.roce !== null) {
+    if (fund.roce >= 25) {
+      pros.push(`Exceptional capital efficiency with ROCE of ${fund.roce.toFixed(1)}%`);
+    } else if (fund.roce >= 15) {
+      pros.push(`Healthy ROCE of ${fund.roce.toFixed(1)}%`);
+    } else if (fund.roce < 10) {
+      cons.push(`Sub-par capital efficiency with ROCE of ${fund.roce.toFixed(1)}%`);
+    }
+  }
+
+  // Debt to Equity
+  if (fund.debtToEquity !== undefined && fund.debtToEquity !== null) {
+    if (fund.debtToEquity <= 0.1) {
+      pros.push(`Virtually debt-free balance sheet (D/E: ${fund.debtToEquity.toFixed(2)})`);
+    } else if (fund.debtToEquity <= 0.5) {
+      pros.push(`Conservative leverage with D/E of ${fund.debtToEquity.toFixed(2)}`);
+    } else if (fund.debtToEquity > 1.0) {
+      cons.push(`High financial leverage with Debt to Equity of ${fund.debtToEquity.toFixed(2)}`);
+    }
+  }
+
+  // Growth CAGR
+  if (fund.profitCagr10Y !== undefined && fund.profitCagr10Y >= 12) {
+    pros.push(`Consistent long-term earnings growth (10Y Profit CAGR: ${fund.profitCagr10Y.toFixed(1)}%)`);
+  } else if (fund.profitCagr10Y !== undefined && fund.profitCagr10Y < 6) {
+    cons.push(`Sluggish 10-year profit CAGR of ${fund.profitCagr10Y.toFixed(1)}%`);
+  }
+
+  // Valuation vs Intrinsic Value
+  if (fund.intrinsicValue && currentPrice > 0) {
+    if (currentPrice < fund.intrinsicValue) {
+      const discount = ((fund.intrinsicValue - currentPrice) / fund.intrinsicValue) * 100;
+      pros.push(`Trading at a ${discount.toFixed(1)}% discount to estimated intrinsic value`);
+    } else if (currentPrice > fund.intrinsicValue * 1.3) {
+      const premium = ((currentPrice - fund.intrinsicValue) / fund.intrinsicValue) * 100;
+      cons.push(`Trading at a ${premium.toFixed(1)}% premium over estimated intrinsic value`);
+    }
+  }
+
+  // 52W Low Proximity
+  if (fund.low52W && currentPrice > 0) {
+    const fromLow = ((currentPrice - fund.low52W) / fund.low52W) * 100;
+    if (fromLow <= 16) {
+      pros.push(`Trading near 52-week low (${fromLow.toFixed(1)}% above bottom) - potential accumulation zone`);
+    }
+  }
+
+  // Cost basis comparison
+  if (averageBuyPrice && currentPrice > 0 && currentPrice < averageBuyPrice) {
+    const dip = ((averageBuyPrice - currentPrice) / averageBuyPrice) * 100;
+    pros.push(`Current price is ${dip.toFixed(1)}% below your average cost basis`);
+  }
+
+  // Default fallbacks if empty
+  if (pros.length === 0) pros.push('Clean track record and sector presence');
+  if (cons.length === 0) cons.push('Subject to broader industry cyclicality and macroeconomic risks');
+
+  return { pros, cons };
+}
+
+/**
+ * Passive Highlights (replacing intrusive popups/sounds)
+ */
+export interface PassiveHighlightBadge {
+  id: string;
+  label: string;
+  color: 'emerald' | 'teal' | 'amber' | 'blue' | 'purple';
+  description: string;
+}
+
+export function getPassiveHighlights(
+  stock: Stock,
+  currentPrice: number,
+  averageBuyPrice: number,
+  fund?: Fundamentals,
+  lastPriceDate?: string | null
+): PassiveHighlightBadge[] {
+  const badges: PassiveHighlightBadge[] = [];
+
+  // 1. Below My Average
+  if (averageBuyPrice > 0 && currentPrice > 0 && currentPrice < averageBuyPrice) {
+    badges.push({
+      id: 'below-avg',
+      label: 'Below Avg',
+      color: 'emerald',
+      description: `CMP ₹ ${currentPrice.toFixed(2)} is lower than your average ₹ ${averageBuyPrice.toFixed(2)}`,
+    });
+  }
+
+  // 2. Near 52W Low (within 16%)
+  if (fund?.low52W && currentPrice > 0) {
+    const diffFromLow = ((currentPrice - fund.low52W) / fund.low52W) * 100;
+    if (diffFromLow <= 16) {
+      badges.push({
+        id: 'near-52w-low',
+        label: 'Near 52W Low',
+        color: 'teal',
+        description: `Within ${diffFromLow.toFixed(1)}% of 52-week low (₹ ${fund.low52W})`,
+      });
+    }
+  }
+
+  // 3. Below Intrinsic Value
+  if (fund?.intrinsicValue && currentPrice > 0 && currentPrice < fund.intrinsicValue) {
+    const discount = ((fund.intrinsicValue - currentPrice) / fund.intrinsicValue) * 100;
+    badges.push({
+      id: 'below-intrinsic',
+      label: 'Below Intrinsic',
+      color: 'blue',
+      description: `${discount.toFixed(1)}% margin of safety below intrinsic value (₹ ${fund.intrinsicValue})`,
+    });
+  }
+
+  // 4. In Buy Zone (Target Price)
+  if (stock.targetBuyPrice && currentPrice > 0 && currentPrice <= stock.targetBuyPrice) {
+    badges.push({
+      id: 'in-buy-zone',
+      label: 'In Buy Zone',
+      color: 'purple',
+      description: `CMP is below your target buy price of ₹ ${stock.targetBuyPrice}`,
+    });
+  }
+
+  // 5. Stale Price (> 7 days)
+  if (isDateOlderThanDays(lastPriceDate, 7)) {
+    badges.push({
+      id: 'stale-price',
+      label: 'Stale Price',
+      color: 'amber',
+      description: 'Price entry is older than 7 days. Update price for fresh valuation.',
+    });
+  }
+
+  return badges;
+}
+
+/**
+ * Compound Annual Growth Rate (CAGR)
+ */
+export function calculateCAGR(startValue: number, endValue: number, years: number): number | null {
+  if (startValue <= 0 || endValue <= 0 || years <= 0) return null;
+  const cagr = Math.pow(endValue / startValue, 1 / years) - 1;
+  return cagr * 100;
+}
+
+/**
+ * Calculate per-stock XIRR from buy, sell, dividend cashflows and terminal value
+ */
+export function calculateStockXIRR(
+  stockId: number,
+  transactions: Transaction[],
+  currentHoldingQty: number,
+  currentPrice: number,
+  dividends: DividendRecord[]
+): number | null {
+  const stockTxs = transactions.filter((t) => t.stockId === stockId);
+  const stockDivs = dividends.filter((d) => d.stockId === stockId);
+
+  const cashflows: Array<{ date: string; amount: number }> = [];
+
+  for (const t of stockTxs) {
+    if (t.type === 'BUY') {
+      cashflows.push({ date: t.date, amount: -(t.quantity * t.price + (t.charges || 0)) });
+    } else {
+      cashflows.push({ date: t.date, amount: +(t.quantity * t.price - (t.charges || 0)) });
+    }
+  }
+
+  for (const d of stockDivs) {
+    const netDiv = d.amountPerShare * d.sharesHeld - (d.tds || 0);
+    cashflows.push({ date: d.date, amount: +netDiv });
+  }
+
+  // Terminal value at current date if still holding shares
+  if (currentHoldingQty > 0 && currentPrice > 0) {
+    cashflows.push({
+      date: new Date().toISOString().split('T')[0],
+      amount: +(currentHoldingQty * currentPrice),
+    });
+  }
+
+  return calculateXIRR(cashflows);
+}
+
+/**
+ * Calculate overall portfolio XIRR
+ */
+export function calculatePortfolioXIRR(
+  transactions: Transaction[],
+  holdings: HoldingCalculation[],
+  dividends: DividendRecord[]
+): number | null {
+  const cashflows: Array<{ date: string; amount: number }> = [];
+
+  for (const t of transactions) {
+    if (t.type === 'BUY') {
+      cashflows.push({ date: t.date, amount: -(t.quantity * t.price + (t.charges || 0)) });
+    } else {
+      cashflows.push({ date: t.date, amount: +(t.quantity * t.price - (t.charges || 0)) });
+    }
+  }
+
+  for (const d of dividends) {
+    const netDiv = d.amountPerShare * d.sharesHeld - (d.tds || 0);
+    cashflows.push({ date: d.date, amount: +netDiv });
+  }
+
+  let totalTerminalValue = 0;
+  for (const h of holdings) {
+    totalTerminalValue += h.currentValue;
+  }
+
+  if (totalTerminalValue > 0) {
+    cashflows.push({
+      date: new Date().toISOString().split('T')[0],
+      amount: +totalTerminalValue,
+    });
+  }
+
+  return calculateXIRR(cashflows);
+}
+
+/**
+ * Group realized P&L and compute taxes by Financial Year (April - March)
+ */
+export interface FYTaxSummary {
+  financialYear: string;
+  totalRealizedPnL: number;
+  stcgGain: number;
+  ltcgGain: number;
+  ltcgExemptionApplied: number;
+  taxableLtcg: number;
+  stcgTax: number;
+  ltcgTax: number;
+  totalTax: number;
+  transactionsCount: number;
+}
+
+export function calculateTaxSummaryByFY(
+  taxRecords: TaxSaleRecord[],
+  stcgRate: number = 20,
+  ltcgRate: number = 12.5,
+  ltcgExemption: number = 125000
+): FYTaxSummary[] {
+  const map = new Map<string, { stcg: number; ltcg: number; count: number }>();
+
+  for (const r of taxRecords) {
+    const curr = map.get(r.financialYear) || { stcg: 0, ltcg: 0, count: 0 };
+    if (r.term === 'STCG') {
+      curr.stcg += r.gainOrLoss;
+    } else {
+      curr.ltcg += r.gainOrLoss;
+    }
+    curr.count++;
+    map.set(r.financialYear, curr);
+  }
+
+  const summaries: FYTaxSummary[] = [];
+
+  map.forEach((val, fy) => {
+    const totalRealizedPnL = val.stcg + val.ltcg;
+    const ltcgExemptionApplied = val.ltcg > 0 ? Math.min(val.ltcg, ltcgExemption) : 0;
+    const taxableLtcg = Math.max(0, val.ltcg - ltcgExemptionApplied);
+
+    const stcgTax = val.stcg > 0 ? (val.stcg * stcgRate) / 100 : 0;
+    const ltcgTax = taxableLtcg > 0 ? (taxableLtcg * ltcgRate) / 100 : 0;
+    const totalTax = stcgTax + ltcgTax;
+
+    summaries.push({
+      financialYear: fy,
+      totalRealizedPnL,
+      stcgGain: val.stcg,
+      ltcgGain: val.ltcg,
+      ltcgExemptionApplied,
+      taxableLtcg,
+      stcgTax,
+      ltcgTax,
+      totalTax,
+      transactionsCount: val.count,
+    });
+  });
+
+  return summaries.sort((a, b) => b.financialYear.localeCompare(a.financialYear));
+}
+
+/**
+ * SIP + Lump Sum + DRIP Multi-Year Simulator
+ */
+export interface SimulatorYearBreakdown {
+  year: number;
+  investedCapital: number;
+  corpusWithoutDrip: number;
+  corpusWithDrip: number;
+  estimatedDividendsEarned: number;
+  wealthMultipleWithoutDrip: number;
+  wealthMultipleWithDrip: number;
+}
+
+export function simulateSIPAndLumpSum(params: {
+  horizonYears: number;
+  monthlySIP: number;
+  lumpSum: number;
+  expectedCagrPercent: number;
+  dividendReinvestment: boolean;
+  estimatedDividendYieldPercent?: number;
+}): {
+  yearBreakdown: SimulatorYearBreakdown[];
+  finalInvested: number;
+  finalCorpus: number;
+  totalWealthGain: number;
+  wealthMultiple: number;
+} {
+  const {
+    horizonYears,
+    monthlySIP,
+    lumpSum,
+    expectedCagrPercent,
+    dividendReinvestment,
+    estimatedDividendYieldPercent = 1.2,
+  } = params;
+
+  const rCapital = expectedCagrPercent / 100;
+  const rDiv = (estimatedDividendYieldPercent || 0) / 100;
+  const annualSIP = monthlySIP * 12;
+
+  const yearBreakdown: SimulatorYearBreakdown[] = [];
+  let corpusNoDrip = lumpSum;
+  let corpusWithDrip = lumpSum;
+  let cumInvested = lumpSum;
+
+  for (let yr = 1; yr <= horizonYears; yr++) {
+    cumInvested += annualSIP;
+
+    // Growth without DRIP
+    corpusNoDrip = (corpusNoDrip + annualSIP) * (1 + rCapital);
+
+    // Growth with DRIP (Capital CAGR + Reinvested Dividend)
+    const effectiveTotalGrowth = dividendReinvestment ? rCapital + rDiv : rCapital;
+    corpusWithDrip = (corpusWithDrip + annualSIP) * (1 + effectiveTotalGrowth);
+
+    const estimatedDividendsEarned = corpusWithDrip * rDiv;
+
+    yearBreakdown.push({
+      year: yr,
+      investedCapital: cumInvested,
+      corpusWithoutDrip: Math.round(corpusNoDrip),
+      corpusWithDrip: Math.round(corpusWithDrip),
+      estimatedDividendsEarned: Math.round(estimatedDividendsEarned),
+      wealthMultipleWithoutDrip: cumInvested > 0 ? Number((corpusNoDrip / cumInvested).toFixed(2)) : 1,
+      wealthMultipleWithDrip: cumInvested > 0 ? Number((corpusWithDrip / cumInvested).toFixed(2)) : 1,
+    });
+  }
+
+  const finalCorpus = dividendReinvestment
+    ? yearBreakdown[yearBreakdown.length - 1]?.corpusWithDrip || 0
+    : yearBreakdown[yearBreakdown.length - 1]?.corpusWithoutDrip || 0;
+
+  const finalInvested = cumInvested;
+  const totalWealthGain = Math.max(0, finalCorpus - finalInvested);
+  const wealthMultiple = finalInvested > 0 ? Number((finalCorpus / finalInvested).toFixed(2)) : 1;
+
+  return {
+    yearBreakdown,
+    finalInvested,
+    finalCorpus,
+    totalWealthGain,
+    wealthMultiple,
+  };
 }

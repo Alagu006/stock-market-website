@@ -9,17 +9,33 @@ import {
   bulkUpsertFundamentals,
   seedSampleIndianPortfolio,
 } from './db';
-import type { Stock, Transaction, CostMethod, TransactionType, Fundamentals } from './types';
+import type {
+  Stock,
+  Transaction,
+  CostMethod,
+  TransactionType,
+  Fundamentals,
+  CorporateAction,
+  DividendRecord,
+  BenchmarkRecord,
+  AppSettings,
+} from './types';
 import {
   calculateAllHoldings,
   calculatePortfolioKPIs,
   calculateSectorAllocations,
 } from './services/calculations';
-import { Navbar } from './components/Navbar';
+import { Navbar, type ActiveTabType } from './components/Navbar';
 import { KPICards } from './components/KPICards';
 import { SectorAllocationCard } from './components/SectorAllocationCard';
 import { HoldingsTable } from './components/HoldingsTable';
 import { StocksAndPricesView } from './components/StocksAndPricesView';
+import { FundamentalXRayView } from './components/FundamentalXRayView';
+import { ScannersView } from './components/ScannersView';
+import { ReturnsAndTaxView } from './components/ReturnsAndTaxView';
+import { DividendsAndCorporateActionsView } from './components/DividendsAndCorporateActionsView';
+import { WatchlistView } from './components/WatchlistView';
+import { SimulatorView } from './components/SimulatorView';
 import { ImportExportView } from './components/ImportExportView';
 import { AddTransactionModal } from './components/AddTransactionModal';
 import { LotHistoryModal } from './components/LotHistoryModal';
@@ -27,6 +43,7 @@ import { ReverseTargetAvgModal } from './components/ReverseTargetAvgModal';
 import { StockMasterModal } from './components/StockMasterModal';
 import { PriceUpdateModal } from './components/PriceUpdateModal';
 import { BackupRestoreModal } from './components/BackupRestoreModal';
+import { SettingsModal } from './components/SettingsModal';
 import { ShieldCheck } from 'lucide-react';
 
 export function App() {
@@ -35,15 +52,18 @@ export function App() {
   const transactions = useLiveQuery(() => db.transactions.toArray()) || [];
   const priceRecords = useLiveQuery(() => db.priceRecords.toArray()) || [];
   const corporateActions = useLiveQuery(() => db.corporateActions.toArray()) || [];
+  const dividendRecords = useLiveQuery(() => db.dividendRecords.toArray()) || [];
   const fundamentalsList = useLiveQuery(() => db.fundamentals.toArray()) || [];
+  const benchmarkRecords = useLiveQuery(() => db.benchmarkRecords.toArray()) || [];
   const settingsList = useLiveQuery(() => db.settings.toArray()) || [];
 
   const currentSettings = settingsList[0];
 
-  // Active Cost Method state (defaults to 'Average Cost' if not yet initialized)
+  // Active Navigation & Controls
   const [costMethod, setCostMethod] = useState<CostMethod>('Average Cost');
-  const [activeTab, setActiveTab] = useState<'portfolio' | 'stocks' | 'import-export'>('portfolio');
+  const [activeTab, setActiveTab] = useState<ActiveTabType>('portfolio');
   const [searchQuery, setSearchQuery] = useState('');
+  const [xrayStockId, setXrayStockId] = useState<number | undefined>(undefined);
 
   // Modals state
   const [isAddTxOpen, setIsAddTxOpen] = useState(false);
@@ -59,6 +79,7 @@ export function App() {
   const [priceUpdateStockId, setPriceUpdateStockId] = useState<number | null>(null);
   const [isStockMasterOpen, setIsStockMasterOpen] = useState(false);
   const [isBackupOpen, setIsBackupOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Sync settings when loaded
   useEffect(() => {
@@ -145,16 +166,34 @@ export function App() {
   };
 
   const handleDeleteStock = async (id: number) => {
-    await db.transaction('rw', [db.stocks, db.transactions, db.priceRecords, db.fundamentals], async () => {
-      await db.stocks.delete(id);
-      await db.transactions.where('stockId').equals(id).delete();
-      await db.priceRecords.where('stockId').equals(id).delete();
-      await db.fundamentals.where('stockId').equals(id).delete();
-    });
+    await db.transaction(
+      'rw',
+      [
+        db.stocks,
+        db.transactions,
+        db.priceRecords,
+        db.fundamentals,
+        db.corporateActions,
+        db.dividendRecords,
+      ],
+      async () => {
+        await db.stocks.delete(id);
+        await db.transactions.where('stockId').equals(id).delete();
+        await db.priceRecords.where('stockId').equals(id).delete();
+        await db.fundamentals.where('stockId').equals(id).delete();
+        await db.corporateActions.where('stockId').equals(id).delete();
+        await db.dividendRecords.where('stockId').equals(id).delete();
+      }
+    );
   };
 
   // Handlers for prices
-  const handleAddPriceRecord = async (stockId: number, symbol: string, price: number, date: string) => {
+  const handleAddPriceRecord = async (
+    stockId: number,
+    symbol: string,
+    price: number,
+    date: string
+  ) => {
     await db.priceRecords.add({
       stockId,
       symbol,
@@ -164,12 +203,94 @@ export function App() {
     });
   };
 
-  // Handlers for Phase 2: Imports & Exports
+  // Handlers for Dividends
+  const handleAddDividend = async (dividend: Omit<DividendRecord, 'id' | 'createdAt'>) => {
+    await db.dividendRecords.add({
+      ...dividend,
+      createdAt: new Date().toISOString(),
+    });
+  };
+
+  const handleDeleteDividend = async (id: number) => {
+    await db.dividendRecords.delete(id);
+  };
+
+  // Handlers for Corporate Actions
+  const handleAddCorporateAction = async (action: Omit<CorporateAction, 'id' | 'createdAt'>) => {
+    await db.corporateActions.add({
+      ...action,
+      createdAt: new Date().toISOString(),
+    });
+  };
+
+  const handleDeleteCorporateAction = async (id: number) => {
+    await db.corporateActions.delete(id);
+  };
+
+  // Handlers for Benchmarks
+  const handleAddBenchmark = async (bench: Omit<BenchmarkRecord, 'id' | 'createdAt'>) => {
+    await db.benchmarkRecords.add({
+      ...bench,
+      createdAt: new Date().toISOString(),
+    });
+  };
+
+  const handleDeleteBenchmark = async (id: number) => {
+    await db.benchmarkRecords.delete(id);
+  };
+
+  // Handlers for Thesis & Watchlist
+  const handleUpdateThesis = async (stockId: number, thesisNote: string) => {
+    await db.stocks.update(stockId, { thesisNote });
+  };
+
+  const handleToggleWatchlist = async (stockId: number, currentStatus: boolean) => {
+    await db.stocks.update(stockId, { watchlist: !currentStatus });
+  };
+
+  const handleUpdateTargetBuyPrice = async (stockId: number, price: number | undefined) => {
+    await db.stocks.update(stockId, { targetBuyPrice: price });
+  };
+
+  // Settings & Database Reset
+  const handleUpdateSettings = async (newSettings: Partial<AppSettings>) => {
+    if (currentSettings?.id) {
+      await db.settings.update(currentSettings.id, newSettings);
+    }
+  };
+
+  const handleResetDatabase = async () => {
+    await db.transaction(
+      'rw',
+      [
+        db.stocks,
+        db.transactions,
+        db.priceRecords,
+        db.fundamentals,
+        db.corporateActions,
+        db.dividendRecords,
+        db.benchmarkRecords,
+      ],
+      async () => {
+        await db.stocks.clear();
+        await db.transactions.clear();
+        await db.priceRecords.clear();
+        await db.fundamentals.clear();
+        await db.corporateActions.clear();
+        await db.dividendRecords.clear();
+        await db.benchmarkRecords.clear();
+      }
+    );
+  };
+
+  // Handlers for Imports & Exports
   const handleConfirmImportStocks = async (newStocks: Omit<Stock, 'id' | 'createdAt'>[]) => {
     await bulkImportStocks(newStocks);
   };
 
-  const handleConfirmImportTransactions = async (newTxs: Omit<Transaction, 'id' | 'createdAt'>[]) => {
+  const handleConfirmImportTransactions = async (
+    newTxs: Omit<Transaction, 'id' | 'createdAt'>[]
+  ) => {
     await db.transactions.bulkAdd(
       newTxs.map((tx) => ({
         ...tx,
@@ -199,15 +320,21 @@ export function App() {
     await updateScreenerMappingSetting(mapping);
   };
 
-  // Pre-fill buy order from Target-Average calculator
-  const handlePreFillBuy = (stockId: number, qty: number, plannedPrice: number) => {
+  // Pre-fill buy order from Target-Average calculator or Watchlist
+  const handlePreFillBuy = (stockId: number, qty: number = 1, plannedPrice?: number) => {
     setAddTxPreFill({
       stockId,
       type: 'BUY',
-      quantity: qty,
+      quantity: qty > 0 ? qty : 1,
       price: plannedPrice,
     });
     setIsAddTxOpen(true);
+  };
+
+  // Navigate to X-Ray
+  const handleNavigateToXRay = (stockId: number) => {
+    setXrayStockId(stockId);
+    setActiveTab('xray');
   };
 
   return (
@@ -228,31 +355,25 @@ export function App() {
         onOpenStockMaster={() => setIsStockMasterOpen(true)}
         onOpenBackup={() => setIsBackupOpen(true)}
         onOpenTargetAvg={() => setTargetAvgStockId(stocks[0]?.id || null)}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+        {/* Phase 1: Portfolio Dashboard */}
         {activeTab === 'portfolio' && (
           <>
-            {/* KPI Cards */}
             <KPICards kpis={portfolioKPIs} costMethod={costMethod} />
-
-            {/* Sector Concentration Bar */}
             <SectorAllocationCard
               allocations={sectorAllocations}
               totalPortfolioValue={portfolioKPIs.currentValue}
             />
-
-            {/* Holdings Table */}
             <HoldingsTable
               holdings={filteredHoldings}
               costMethod={costMethod}
               onOpenLotHistory={(stockId) => setLotHistoryStockId(stockId)}
               onOpenTargetAvg={(stockId) => setTargetAvgStockId(stockId)}
-              onOpenAddTxForStock={(stockId) => {
-                setAddTxPreFill({ stockId });
-                setIsAddTxOpen(true);
-              }}
+              onOpenAddTxForStock={(stockId) => handlePreFillBuy(stockId)}
               onOpenPriceUpdate={(stockId) => setPriceUpdateStockId(stockId)}
               onSeedSampleData={seedSampleIndianPortfolio}
               onOpenStockMaster={() => setIsStockMasterOpen(true)}
@@ -260,6 +381,7 @@ export function App() {
           </>
         )}
 
+        {/* Phase 1: Stocks and Manual Prices */}
         {activeTab === 'stocks' && (
           <StocksAndPricesView
             stocks={stocks}
@@ -269,16 +391,89 @@ export function App() {
             costMethod={costMethod}
             searchQuery={searchQuery}
             onOpenPriceUpdate={(stockId) => setPriceUpdateStockId(stockId)}
-            onOpenAddTx={(stockId) => {
-              setAddTxPreFill({ stockId });
-              setIsAddTxOpen(true);
-            }}
+            onOpenAddTx={(stockId) => handlePreFillBuy(stockId)}
             onOpenStockMaster={() => setIsStockMasterOpen(true)}
             onOpenLotHistory={(stockId) => setLotHistoryStockId(stockId)}
             onOpenTargetAvg={(stockId) => setTargetAvgStockId(stockId)}
           />
         )}
 
+        {/* Phase 3: Fundamental X-Ray */}
+        {activeTab === 'xray' && (
+          <FundamentalXRayView
+            stocks={stocks}
+            fundamentalsList={fundamentalsList}
+            priceRecords={priceRecords}
+            holdings={allHoldings}
+            costMethod={costMethod}
+            initialStockId={xrayStockId}
+            onUpdateThesis={handleUpdateThesis}
+            onOpenAddTx={(stockId) => handlePreFillBuy(stockId)}
+            onOpenPriceUpdate={(stockId) => setPriceUpdateStockId(stockId)}
+          />
+        )}
+
+        {/* Phase 3: Pre-Built & Custom Scanners */}
+        {activeTab === 'scanners' && (
+          <ScannersView
+            stocks={stocks}
+            fundamentalsList={fundamentalsList}
+            priceRecords={priceRecords}
+            holdings={allHoldings}
+            onOpenAddTx={(stockId) => handlePreFillBuy(stockId)}
+            onNavigateToXRay={handleNavigateToXRay}
+          />
+        )}
+
+        {/* Phase 4: Returns & Indian Tax Center */}
+        {activeTab === 'tax' && (
+          <ReturnsAndTaxView
+            stocks={stocks}
+            transactions={transactions}
+            corporateActions={corporateActions}
+            dividends={dividendRecords}
+            benchmarks={benchmarkRecords}
+            holdings={allHoldings}
+            settings={currentSettings}
+            onAddBenchmark={handleAddBenchmark}
+            onDeleteBenchmark={handleDeleteBenchmark}
+          />
+        )}
+
+        {/* Phase 4: Dividends & Corporate Actions */}
+        {activeTab === 'dividends' && (
+          <DividendsAndCorporateActionsView
+            stocks={stocks}
+            dividends={dividendRecords}
+            corporateActions={corporateActions}
+            holdings={allHoldings}
+            onAddDividend={handleAddDividend}
+            onDeleteDividend={handleDeleteDividend}
+            onAddCorporateAction={handleAddCorporateAction}
+            onDeleteCorporateAction={handleDeleteCorporateAction}
+          />
+        )}
+
+        {/* Phase 5: Buy-Zone Watchlist */}
+        {activeTab === 'watchlist' && (
+          <WatchlistView
+            stocks={stocks}
+            fundamentalsList={fundamentalsList}
+            priceRecords={priceRecords}
+            holdings={allHoldings}
+            onToggleWatchlist={handleToggleWatchlist}
+            onUpdateTargetBuyPrice={handleUpdateTargetBuyPrice}
+            onOpenAddTx={(stockId) => handlePreFillBuy(stockId)}
+            onNavigateToXRay={handleNavigateToXRay}
+          />
+        )}
+
+        {/* Phase 5: Compounding Simulator */}
+        {activeTab === 'simulator' && (
+          <SimulatorView currentPortfolioValue={portfolioKPIs.currentValue} />
+        )}
+
+        {/* Phase 2: Import / Export Center */}
         {activeTab === 'import-export' && (
           <ImportExportView
             stocks={stocks}
@@ -312,7 +507,7 @@ export function App() {
               <span>100% Client-Side IndexedDB</span>
             </span>
             <span>•</span>
-            <span>Phase 2: Excel / CSV Import & Export</span>
+            <span className="text-emerald-400 font-semibold">Phases 1-6 Complete</span>
           </div>
         </div>
       </footer>
@@ -357,7 +552,7 @@ export function App() {
         corporateActions={corporateActions}
         costMethod={costMethod}
         initialStockId={targetAvgStockId || undefined}
-        onPreFillBuy={handlePreFillBuy}
+        onPreFillBuy={(stockId, qty, price) => handlePreFillBuy(stockId, qty, price)}
       />
 
       {/* 4. Stock Master Management */}
@@ -385,6 +580,16 @@ export function App() {
         onClose={() => setIsBackupOpen(false)}
         settings={currentSettings}
         onDataChanged={() => {}}
+      />
+
+      {/* 7. Settings Modal (Phase 6) */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        settings={currentSettings}
+        onUpdateSettings={handleUpdateSettings}
+        onLoadDemoData={seedSampleIndianPortfolio}
+        onResetDatabase={handleResetDatabase}
       />
     </div>
   );

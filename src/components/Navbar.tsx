@@ -8,22 +8,43 @@ import {
   Database,
   RefreshCw,
   Building2,
+  Settings,
+  LayoutDashboard,
+  Layers,
+  Compass,
+  FileText,
+  Coins,
+  Bookmark,
+  Sparkles,
+  ArrowDownUp,
 } from 'lucide-react';
 import type { CostMethod, AppSettings } from '../types';
 import { isDateOlderThanDays, formatDateDDMMYYYY } from '../utils/formatters';
+
+export type ActiveTabType =
+  | 'portfolio'
+  | 'stocks'
+  | 'xray'
+  | 'scanners'
+  | 'tax'
+  | 'dividends'
+  | 'watchlist'
+  | 'simulator'
+  | 'import-export';
 
 interface NavbarProps {
   costMethod: CostMethod;
   onCostMethodChange: (method: CostMethod) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
-  activeTab: 'portfolio' | 'stocks' | 'import-export';
-  onTabChange: (tab: 'portfolio' | 'stocks' | 'import-export') => void;
+  activeTab: ActiveTabType;
+  onTabChange: (tab: ActiveTabType) => void;
   settings: AppSettings | undefined;
   onOpenAddTx: () => void;
   onOpenStockMaster: () => void;
   onOpenBackup: () => void;
   onOpenTargetAvg: () => void;
+  onOpenSettings: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -38,8 +59,21 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenStockMaster,
   onOpenBackup,
   onOpenTargetAvg,
+  onOpenSettings,
 }) => {
   const isBackupStale = !settings?.lastBackupDate || isDateOlderThanDays(settings.lastBackupDate, 14);
+
+  const tabs: Array<{ id: ActiveTabType; label: string; icon: React.ReactNode }> = [
+    { id: 'portfolio', label: 'Holdings', icon: <LayoutDashboard className="w-3.5 h-3.5" /> },
+    { id: 'stocks', label: 'Manual Prices', icon: <Building2 className="w-3.5 h-3.5" /> },
+    { id: 'xray', label: 'Fundamental X-Ray', icon: <Layers className="w-3.5 h-3.5" /> },
+    { id: 'scanners', label: 'Scanners', icon: <Compass className="w-3.5 h-3.5" /> },
+    { id: 'tax', label: 'Returns & Taxes', icon: <FileText className="w-3.5 h-3.5" /> },
+    { id: 'dividends', label: 'Dividends & Actions', icon: <Coins className="w-3.5 h-3.5" /> },
+    { id: 'watchlist', label: 'Buy-Zone Watchlist', icon: <Bookmark className="w-3.5 h-3.5" /> },
+    { id: 'simulator', label: 'Wealth Simulator', icon: <Sparkles className="w-3.5 h-3.5" /> },
+    { id: 'import-export', label: 'Import / Export', icon: <ArrowDownUp className="w-3.5 h-3.5" /> },
+  ];
 
   return (
     <header className="sticky top-0 z-30 bg-[#0f172a]/95 backdrop-blur-md border-b border-slate-800">
@@ -66,7 +100,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           {/* Search bar */}
-          <div className="flex-1 max-w-md hidden md:block">
+          <div className="flex-1 max-w-sm hidden md:block">
             <div className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
@@ -74,7 +108,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 value={searchQuery}
                 onChange={(e) => onSearchChange(e.target.value)}
                 placeholder="Search symbol, BSE code, name, sector..."
-                className="w-full pl-10 pr-4 py-2 bg-slate-900/90 text-sm text-slate-200 placeholder-slate-500 rounded-lg border border-slate-700/70 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
+                className="w-full pl-10 pr-4 py-1.5 bg-slate-900/90 text-xs text-slate-200 placeholder-slate-500 rounded-lg border border-slate-700/70 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
               />
               {searchQuery && (
                 <button
@@ -88,18 +122,18 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           {/* Action buttons & Global Settings */}
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-2 sm:gap-2.5">
             {/* Global Cost Method dropdown */}
-            <div className="flex items-center bg-slate-900/90 border border-slate-700/80 rounded-lg p-1">
+            <div className="flex items-center bg-slate-900/90 border border-slate-700/80 rounded-lg p-0.5 sm:p-1">
               <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400 ml-1.5 hidden sm:block" />
               <select
                 value={costMethod}
                 onChange={(e) => onCostMethodChange(e.target.value as CostMethod)}
-                className="bg-transparent text-xs sm:text-sm font-semibold text-emerald-400 focus:outline-none px-2 py-1 cursor-pointer"
+                className="bg-transparent text-xs font-semibold text-emerald-400 focus:outline-none px-2 py-1 cursor-pointer"
                 title="Global Cost Basis Method (Recalculates entire portfolio live)"
               >
                 <option value="Average Cost" className="bg-slate-900 text-slate-200">
-                  Average Cost
+                  Avg Cost
                 </option>
                 <option value="FIFO" className="bg-slate-900 text-slate-200">
                   FIFO
@@ -110,7 +144,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* Manage Stock Master list */}
             <button
               onClick={onOpenStockMaster}
-              className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-900 text-slate-300 border border-slate-700/80 hover:bg-slate-800 transition-all"
+              className="hidden xl:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-900 text-slate-300 border border-slate-700/80 hover:bg-slate-800 transition-all"
               title="Manage Stocks Master List"
             >
               <Building2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -120,7 +154,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* Buy the Dip quick calculator trigger */}
             <button
               onClick={onOpenTargetAvg}
-              className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 hover:bg-amber-500/20 transition-all"
+              className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 hover:bg-amber-500/20 transition-all"
               title="Reverse Target-Average Calculator"
             >
               <RefreshCw className="w-3.5 h-3.5" />
@@ -157,47 +191,39 @@ export const Navbar: React.FC<NavbarProps> = ({
               {isBackupStale && (
                 <span className="flex items-center gap-0.5 text-[10px] text-rose-400 font-bold">
                   <AlertTriangle className="w-3 h-3 text-rose-400 animate-pulse" />
-                  <span className="hidden md:inline">&gt;14d</span>
                 </span>
               )}
+            </button>
+
+            {/* Settings button */}
+            <button
+              onClick={onOpenSettings}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white bg-slate-900 border border-slate-700/80 hover:bg-slate-800 transition-colors"
+              title="Dalal Diary's Settings"
+            >
+              <Settings className="w-4 h-4" />
             </button>
           </div>
         </div>
 
         {/* Tab Navigation & Mobile Search */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between pb-3 gap-2">
-          {/* Navigation Tabs */}
-          <nav className="flex items-center space-x-1 sm:space-x-2">
-            <button
-              onClick={() => onTabChange('portfolio')}
-              className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-all ${
-                activeTab === 'portfolio'
-                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-              }`}
-            >
-              Dashboard & Holdings
-            </button>
-            <button
-              onClick={() => onTabChange('stocks')}
-              className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-all ${
-                activeTab === 'stocks'
-                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-              }`}
-            >
-              Stocks & Manual Prices
-            </button>
-            <button
-              onClick={() => onTabChange('import-export')}
-              className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-all ${
-                activeTab === 'import-export'
-                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-              }`}
-            >
-              Import / Export (Excel & CSV)
-            </button>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between pb-2.5 gap-2">
+          {/* Scrollable Navigation Tabs */}
+          <nav className="flex items-center space-x-1 sm:space-x-1.5 overflow-x-auto no-scrollbar py-0.5">
+            {tabs.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => onTabChange(t.id)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-all ${
+                  activeTab === t.id
+                    ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent'
+                }`}
+              >
+                {t.icon}
+                <span>{t.label}</span>
+              </button>
+            ))}
           </nav>
 
           {/* Mobile search bar */}

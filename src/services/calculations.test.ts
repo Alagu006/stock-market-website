@@ -6,8 +6,13 @@ import {
   calculateReverseTargetAverage,
   calculateXIRR,
   classifyTaxLots,
+  calculateCAGR,
+  calculateTaxSummaryByFY,
+  simulateSIPAndLumpSum,
+  generateProsAndCons,
+  getPassiveHighlights,
 } from './calculations';
-import type { Transaction, CorporateAction } from '../types';
+import type { Transaction, CorporateAction, Stock, Fundamentals } from '../types';
 
 describe('Dalal Diary\'s Core Calculations Engine', () => {
   const stockId = 1;
@@ -206,4 +211,126 @@ describe('Dalal Diary\'s Core Calculations Engine', () => {
     expect(stcg?.quantity).toBe(5);
     expect(stcg?.gainOrLoss).toBe(5 * (1500 - 1200)); // 1500
   });
+
+  it('calculates Multi-Year CAGR correctly', () => {
+    // 100 growing to 200 over 5 years
+    // (200/100)^(1/5) - 1 = 2^(0.2) - 1 = ~14.87%
+    const cagr = calculateCAGR(100, 200, 5);
+    expect(cagr).not.toBeNull();
+    expect(cagr!).toBeCloseTo(14.87, 1);
+
+    // Negative / invalid cases
+    expect(calculateCAGR(0, 200, 5)).toBeNull();
+    expect(calculateCAGR(100, 0, 5)).toBeNull();
+  });
+
+  it('calculates Indian Capital Gains Tax by FY with Budget 2024 rules and ₹1.25L LTCG exemption', () => {
+    const taxRecords = [
+      {
+        symbol: 'TCS',
+        sellDate: '2024-06-15',
+        buyDate: '2024-01-10',
+        quantity: 10,
+        sellPrice: 4000,
+        buyPrice: 3000,
+        holdingDays: 157,
+        gainOrLoss: 50000, // STCG 50,000
+        term: 'STCG' as const,
+        financialYear: '2024-25',
+      },
+      {
+        symbol: 'RELIANCE',
+        sellDate: '2024-09-20',
+        buyDate: '2022-05-10',
+        quantity: 100,
+        sellPrice: 3000,
+        buyPrice: 1000,
+        holdingDays: 864,
+        gainOrLoss: 200000, // LTCG 2,00,000
+        term: 'LTCG' as const,
+        financialYear: '2024-25',
+      },
+    ];
+
+    const summaries = calculateTaxSummaryByFY(taxRecords, 20, 12.5, 125000);
+    expect(summaries).toHaveLength(1);
+
+    const fy2425 = summaries[0];
+    expect(fy2425.financialYear).toBe('2024-25');
+    expect(fy2425.stcgGain).toBe(50000);
+    expect(fy2425.ltcgGain).toBe(200000);
+
+    // LTCG Exemption applied = ₹1,25,000
+    expect(fy2425.ltcgExemptionApplied).toBe(125000);
+    // Taxable LTCG = 2,00,000 - 1,25,000 = 75,000
+    expect(fy2425.taxableLtcg).toBe(75000);
+
+    // STCG Tax @ 20% on 50,000 = 10,000
+    expect(fy2425.stcgTax).toBe(10000);
+
+    // LTCG Tax @ 12.5% on 75,000 = 9,375
+    expect(fy2425.ltcgTax).toBe(9375);
+
+    // Total Tax Due = 10,000 + 9,375 = 19,375
+    expect(fy2425.totalTax).toBe(19375);
+  });
+
+  it('accurately models multi-year SIP + Lump Sum + Compounding with DRIP bonus', () => {
+    const sim = simulateSIPAndLumpSum({
+      horizonYears: 10,
+      monthlySIP: 10000, // 1.2L per year
+      lumpSum: 100000, // 1L initial
+      expectedCagrPercent: 12,
+      dividendReinvestment: true,
+      estimatedDividendYieldPercent: 2,
+    });
+
+    // 10 years of 1.2L = 12L + 1L initial = 13L total invested
+    expect(sim.finalInvested).toBe(1300000);
+    expect(sim.yearBreakdown).toHaveLength(10);
+    expect(sim.finalCorpus).toBeGreaterThan(sim.finalInvested);
+    expect(sim.wealthMultiple).toBeGreaterThan(1);
+    expect(sim.totalWealthGain).toBe(sim.finalCorpus - sim.finalInvested);
+  });
+
+  it('evaluates passive highlight badges and pros/cons without intrusive popups', () => {
+    const stock: Stock = {
+      id: 1,
+      symbol: 'TCS',
+      bseCode: '532540',
+      name: 'Tata Consultancy Services',
+      sector: 'IT',
+      marketCapCategory: 'Large Cap',
+      targetBuyPrice: 3800,
+      createdAt: '2023-01-01',
+    };
+
+    const fund: Fundamentals = {
+      stockId: 1,
+      symbol: 'TCS',
+      roce: 58,
+      debtToEquity: 0.05,
+      profitCagr10Y: 12,
+      low52W: 3400,
+      intrinsicValue: 4200,
+      lastUpdated: '2024-01-01',
+    };
+
+    // CMP = 3500, averageBuyPrice = 3600
+    // Below avg (3500 < 3600)
+    // In buy zone (3500 <= 3800 target)
+    // Below intrinsic (3500 < 4200)
+    // Near 52W low (3500 is within 16% of 3400)
+    const badges = getPassiveHighlights(stock, 3500, 3600, fund, '2024-01-01');
+    const badgeIds = badges.map((b) => b.id);
+
+    expect(badgeIds).toContain('below-avg');
+    expect(badgeIds).toContain('in-buy-zone');
+    expect(badgeIds).toContain('below-intrinsic');
+    expect(badgeIds).toContain('near-52w-low');
+
+    const prosCons = generateProsAndCons(fund, 3500, 3600);
+    expect(prosCons.pros.length).toBeGreaterThan(0);
+  });
 });
+

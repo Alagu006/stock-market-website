@@ -491,6 +491,73 @@ export async function seedSampleIndianPortfolio(): Promise<void> {
       },
     ]);
 
+    // 5. Dividends
+    await db.dividendRecords.bulkAdd([
+      {
+        stockId: tcsId,
+        symbol: 'TCS',
+        date: '2023-07-20',
+        amountPerShare: 24,
+        sharesHeld: 25,
+        tds: 60,
+        note: 'Interim Dividend FY24',
+        createdAt: '2023-07-20',
+      },
+      {
+        stockId: tcsId,
+        symbol: 'TCS',
+        date: '2024-01-18',
+        amountPerShare: 27,
+        sharesHeld: 40,
+        tds: 108,
+        note: 'Special Dividend FY24',
+        createdAt: '2024-01-18',
+      },
+      {
+        stockId: relId,
+        symbol: 'RELIANCE',
+        date: '2023-08-21',
+        amountPerShare: 9,
+        sharesHeld: 40,
+        tds: 36,
+        note: 'Final Dividend FY23',
+        createdAt: '2023-08-21',
+      },
+      {
+        stockId: hdfcId,
+        symbol: 'HDFCBANK',
+        date: '2024-05-10',
+        amountPerShare: 19.5,
+        sharesHeld: 100,
+        tds: 195,
+        note: 'Dividend FY24',
+        createdAt: '2024-05-10',
+      },
+    ]);
+
+    // 6. Corporate Action: Reliance 1:1 Bonus Issue
+    await db.corporateActions.bulkAdd([
+      {
+        stockId: relId,
+        symbol: 'RELIANCE',
+        type: 'BONUS',
+        fromFactor: 1,
+        toFactor: 2,
+        exDate: '2024-10-28',
+        note: '1:1 Bonus issue approved by AGM',
+        createdAt: '2024-10-28',
+      },
+    ]);
+
+    // 7. Benchmark Records: NIFTY 50 historical checkpoints
+    await db.benchmarkRecords.bulkAdd([
+      { name: 'NIFTY 50', date: '2023-04-03', level: 17398, createdAt: '2023-04-03' },
+      { name: 'NIFTY 50', date: '2023-10-03', level: 19528, createdAt: '2023-10-03' },
+      { name: 'NIFTY 50', date: '2024-04-01', level: 22462, createdAt: '2024-04-01' },
+      { name: 'NIFTY 50', date: '2024-09-30', level: 25810, createdAt: '2024-09-30' },
+      { name: 'NIFTY 50', date: '2025-01-02', level: 24150, createdAt: '2025-01-02' },
+    ]);
+
     await getOrInitSettings();
   });
 }
