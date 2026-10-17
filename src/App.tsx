@@ -190,14 +190,14 @@ export function App() {
 
       if (stocks.length === 0) return;
 
-      // B. Build symbols list for all stocks held or watchlisted (NSE, BSE, and clean codes)
+      // B. Build symbols list for all stocks held or watchlisted (NSE and BSE variants)
       const targetSymbols: string[] = [];
 
       for (const st of stocks) {
         const sym = st.symbol.trim().toUpperCase();
-        targetSymbols.push(`${sym}.NS`, `${sym}.BO`, sym);
+        targetSymbols.push(`${sym}.NS`, `${sym}.BO`);
         if (st.bseCode && /^\d{6}$/.test(st.bseCode.trim())) {
-          targetSymbols.push(st.bseCode.trim(), `${st.bseCode.trim()}.BO`);
+          targetSymbols.push(`${st.bseCode.trim()}.BO`);
         }
       }
 

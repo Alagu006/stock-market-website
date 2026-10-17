@@ -233,9 +233,9 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
     const querySymbols: string[] = [];
     for (const r of combinedResults) {
       const sym = r.symbol.trim().toUpperCase();
-      querySymbols.push(`${sym}.NS`, `${sym}.BO`, sym);
+      querySymbols.push(`${sym}.NS`, `${sym}.BO`);
       if (r.bseCode && /^\d{6}$/.test(r.bseCode.trim())) {
-        querySymbols.push(r.bseCode.trim(), `${r.bseCode.trim()}.BO`);
+        querySymbols.push(`${r.bseCode.trim()}.BO`);
       }
     }
 

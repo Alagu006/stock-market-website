@@ -129,12 +129,12 @@ export async function checkProxyHealth(): Promise<{
 export async function fetchLiveMarketIndices(): Promise<MarketIndicesData | null> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const res = await fetch(`${PROXY_BASE_URL}/api/indices`, { signal: controller.signal });
     clearTimeout(timeout);
 
     return await safeJsonParse<MarketIndicesData>(res);
-  } catch (err) {
+  } catch (err: any) {
     return null;
   }
 }
@@ -150,7 +150,7 @@ export async function fetchLiveQuotes(symbols: string[]): Promise<LiveQuote[]> {
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), 25000);
     const res = await fetch(`${PROXY_BASE_URL}/api/quote?symbols=${encoded}`, {
       signal: controller.signal,
     });
@@ -158,7 +158,11 @@ export async function fetchLiveQuotes(symbols: string[]): Promise<LiveQuote[]> {
 
     const data = await safeJsonParse<{ quotes: LiveQuote[] }>(res);
     return data?.quotes || [];
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      // Quietly return empty on timeout or cancellation
+      return [];
+    }
     console.warn('[PriceFeed] Failed to fetch live quotes:', err);
     return [];
   }
@@ -184,7 +188,7 @@ export async function searchLiveSymbols(query: string): Promise<
   if (!query || query.trim().length === 0) return [];
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
+    const timeout = setTimeout(() => controller.abort(), 12000);
     const res = await fetch(`${PROXY_BASE_URL}/api/search?q=${encodeURIComponent(query.trim())}`, {
       signal: controller.signal,
     });
@@ -192,7 +196,7 @@ export async function searchLiveSymbols(query: string): Promise<
 
     const data = await safeJsonParse<{ results: any[] }>(res);
     return data?.results || [];
-  } catch (err) {
+  } catch (err: any) {
     return [];
   }
 }
@@ -207,7 +211,7 @@ export async function fetchCorporateEvents(
   if (!symbol) return null;
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const bseParam = bseCode ? `&bseCode=${encodeURIComponent(bseCode.trim())}` : '';
     const res = await fetch(
       `${PROXY_BASE_URL}/api/events?symbol=${encodeURIComponent(symbol.trim())}${bseParam}`,
@@ -216,7 +220,7 @@ export async function fetchCorporateEvents(
     clearTimeout(timeout);
 
     return await safeJsonParse<CorporateEventData>(res);
-  } catch (err) {
+  } catch (err: any) {
     return null;
   }
 }
@@ -238,7 +242,7 @@ export async function fetchStockFundamentals(
   if (!symbol) return null;
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const timeout = setTimeout(() => controller.abort(), 20000);
     const params = new URLSearchParams({
       symbol: symbol.trim(),
     });
@@ -257,7 +261,8 @@ export async function fetchStockFundamentals(
       fundamentals: Partial<Fundamentals>;
       bseData?: any;
     }>(res);
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.name === 'AbortError') return null;
     console.warn(`[PriceFeed] Error fetching fundamentals for ${symbol}:`, err);
     return null;
   }
@@ -270,8 +275,8 @@ export async function fetchStockEdgeNews(symbol: string): Promise<StockEdgeNewsR
   if (!symbol) return null;
   try {
     const controller = new AbortController();
-    // 15s timeout to allow safe 5-10s server-side rate limit throttle
-    const timeout = setTimeout(() => controller.abort(), 18000);
+    // 20s timeout to allow safe rate limit throttle
+    const timeout = setTimeout(() => controller.abort(), 20000);
     const res = await fetch(
       `${PROXY_BASE_URL}/api/stockedge-updates?symbol=${encodeURIComponent(symbol.trim())}`,
       { signal: controller.signal }
@@ -279,7 +284,8 @@ export async function fetchStockEdgeNews(symbol: string): Promise<StockEdgeNewsR
     clearTimeout(timeout);
 
     return await safeJsonParse<StockEdgeNewsResponse>(res);
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.name === 'AbortError') return null;
     console.warn(`[PriceFeed] Error fetching StockEdge news for ${symbol}:`, err);
     return null;
   }
