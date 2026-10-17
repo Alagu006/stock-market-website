@@ -314,12 +314,13 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
 
     // 3. Save or update in IndexedDB with all live quote fields applied via applyFeedToStock
     let stockId = 0;
+    const cleanSym = item.symbol.trim().toUpperCase();
     try {
-      const existingInDb = await db.stocks.where('symbol').equals(item.symbol).first();
+      const existingInDb = await db.stocks.where('symbol').equalsIgnoreCase(cleanSym).first();
       if (!existingInDb) {
         let baseStock: Stock = {
-          symbol: item.symbol,
-          bseCode: item.bseCode || (item.source === 'live' && /^\d{6}$/.test(item.symbol) ? item.symbol : '000000'),
+          symbol: cleanSym,
+          bseCode: item.bseCode || (item.source === 'live' && /^\d{6}$/.test(cleanSym) ? cleanSym : '000000'),
           name: item.name,
           sector: item.sector || 'Diversified',
           marketCapCategory: (item.marketCapCategory as any) || 'Mid Cap',

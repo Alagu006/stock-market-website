@@ -74,6 +74,25 @@ export function getFallbackYahooSymbol(
 }
 
 /**
+ * Safely parse JSON from a fetch Response, protecting against HTML (<!doctype ...)
+ * and empty responses from idling servers or gateway timeouts.
+ */
+async function safeJsonParse<T>(res: Response): Promise<T | null> {
+  if (!res || !res.ok) return null;
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    return null;
+  }
+  try {
+    const text = await res.text();
+    if (!text || text.trim().length === 0) return null;
+    return JSON.parse(text) as T;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
  * Ping Proxy Server Health Check
  */
 export async function checkProxyHealth(): Promise<{
@@ -109,8 +128,7 @@ export async function fetchLiveMarketIndices(): Promise<MarketIndicesData | null
     const res = await fetch(`${PROXY_BASE_URL}/api/indices`, { signal: controller.signal });
     clearTimeout(timeout);
 
-    if (!res.ok) return null;
-    return await res.json();
+    return await safeJsonParse<MarketIndicesData>(res);
   } catch (err) {
     return null;
   }
@@ -133,9 +151,8 @@ export async function fetchLiveQuotes(symbols: string[]): Promise<LiveQuote[]> {
     });
     clearTimeout(timeout);
 
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.quotes || [];
+    const data = await safeJsonParse<{ quotes: LiveQuote[] }>(res);
+    return data?.quotes || [];
   } catch (err) {
     console.warn('[PriceFeed] Failed to fetch live quotes:', err);
     return [];
@@ -153,6 +170,10 @@ export async function searchLiveSymbols(query: string): Promise<
     exchange: string;
     exchangeDisplay: string;
     type: string;
+    price?: number;
+    previousClose?: number;
+    change?: number;
+    changePercent?: number;
   }>
 > {
   if (!query || query.trim().length === 0) return [];
@@ -164,9 +185,8 @@ export async function searchLiveSymbols(query: string): Promise<
     });
     clearTimeout(timeout);
 
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.results || [];
+    const data = await safeJsonParse<{ results: any[] }>(res);
+    return data?.results || [];
   } catch (err) {
     return [];
   }
@@ -186,8 +206,7 @@ export async function fetchCorporateEvents(symbol: string): Promise<CorporateEve
     );
     clearTimeout(timeout);
 
-    if (!res.ok) return null;
-    return await res.json();
+    return await safeJsonParse<CorporateEventData>(res);
   } catch (err) {
     return null;
   }
@@ -223,8 +242,12 @@ export async function fetchStockFundamentals(
     });
     clearTimeout(timeout);
 
-    if (!res.ok) return null;
-    return await res.json();
+    return await safeJsonParse<{
+      symbol: string;
+      bseCode?: string;
+      fundamentals: Partial<Fundamentals>;
+      bseData?: any;
+    }>(res);
   } catch (err) {
     console.warn(`[PriceFeed] Error fetching fundamentals for ${symbol}:`, err);
     return null;
@@ -246,8 +269,7 @@ export async function fetchStockEdgeNews(symbol: string): Promise<StockEdgeNewsR
     );
     clearTimeout(timeout);
 
-    if (!res.ok) return null;
-    return await res.json();
+    return await safeJsonParse<StockEdgeNewsResponse>(res);
   } catch (err) {
     console.warn(`[PriceFeed] Error fetching StockEdge news for ${symbol}:`, err);
     return null;
@@ -272,8 +294,8 @@ export async function addStockToRemoteDirectory(stockData: {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(stockData),
     });
-    if (!res.ok) return null;
-    return await res.json();
+
+    return await safeJsonParse<{ success: boolean; added: boolean; stock?: any }>(res);
   } catch (err) {
     console.warn('[PriceFeed] Failed to add stock to remote directory:', err);
     return null;

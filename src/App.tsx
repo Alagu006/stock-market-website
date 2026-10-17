@@ -342,19 +342,48 @@ export function App() {
 
   // Handlers for stocks
   const handleAddStock = async (stockData: Omit<Stock, 'id' | 'createdAt'>, livePrice?: number) => {
-    const id = await db.stocks.add({
-      ...stockData,
-      createdAt: new Date().toISOString(),
-    });
+    const cleanSym = stockData.symbol.trim().toUpperCase();
+    const existing = await db.stocks.where('symbol').equalsIgnoreCase(cleanSym).first();
+    let id: number;
+
+    if (existing && existing.id) {
+      id = existing.id;
+      await db.stocks.update(id, {
+        ...stockData,
+        symbol: cleanSym,
+      });
+    } else {
+      id = Number(
+        await db.stocks.add({
+          ...stockData,
+          symbol: cleanSym,
+          createdAt: new Date().toISOString(),
+        })
+      );
+    }
 
     if (livePrice && livePrice > 0) {
-      await db.priceRecords.add({
-        stockId: id,
-        symbol: stockData.symbol,
-        price: livePrice,
-        date: new Date().toISOString().split('T')[0],
-        createdAt: new Date().toISOString(),
-      });
+      const todayDate = new Date().toISOString().split('T')[0];
+      const existingPrice = await db.priceRecords
+        .where('stockId')
+        .equals(id)
+        .filter((p) => p.date === todayDate)
+        .first();
+
+      if (existingPrice && existingPrice.id) {
+        await db.priceRecords.update(existingPrice.id, {
+          price: livePrice,
+          createdAt: new Date().toISOString(),
+        });
+      } else {
+        await db.priceRecords.add({
+          stockId: id,
+          symbol: cleanSym,
+          price: livePrice,
+          date: todayDate,
+          createdAt: new Date().toISOString(),
+        });
+      }
     }
   };
 
