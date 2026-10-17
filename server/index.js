@@ -24,7 +24,13 @@ if (frontendOrigin) {
   allowedOrigins.push(frontendOrigin.replace(/\/$/, ''));
 }
 
-app.use(cors());
+app.use(
+  cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  })
+);
 
 app.use(express.json());
 
@@ -771,51 +777,166 @@ app.get('/api/indices', async (req, res) => {
   }
 });
 
-// 4. Search live symbol/company backup
+// 4. Search live symbol/company backup with multi-layer fallback
 app.get('/api/search', async (req, res) => {
   const query = req.query.q;
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'Query parameter "q" is required' });
   }
 
-  const cacheKey = `search_${query.toLowerCase()}`;
+  const cleanQuery = query.trim();
+  const cacheKey = `search_${cleanQuery.toLowerCase()}`;
   const cached = getCached(cacheKey);
   if (cached) {
     return res.json(cached);
   }
 
+  const resultsMap = new Map();
+
+  // Layer 1: Search local stocks-directory.json
+  try {
+    if (fs.existsSync(DIRECTORY_FILE_PATH)) {
+      const fileData = await fs.promises.readFile(DIRECTORY_FILE_PATH, 'utf-8');
+      const directory = JSON.parse(fileData);
+      const qUpper = cleanQuery.toUpperCase();
+
+      for (const item of directory) {
+        const sym = (item.symbol || '').toUpperCase();
+        const bse = (item.bseCode || '').trim();
+        const nm = (item.name || '').toUpperCase();
+        if (sym.includes(qUpper) || bse === qUpper || nm.includes(qUpper)) {
+          const key = sym || bse;
+          resultsMap.set(key, {
+            symbol: `${sym}.NS`,
+            cleanSymbol: sym || bse,
+            bseCode: bse,
+            name: item.name || sym,
+            sector: item.sector || 'Diversified',
+            marketCapCategory: item.marketCapCategory || 'Mid Cap',
+            exchange: 'NSE',
+            exchangeDisplay: 'NSE / BSE',
+            type: 'EQUITY',
+          });
+        }
+      }
+    }
+  } catch (err) {
+    // Non-fatal directory read error
+  }
+
+  // Layer 2: Yahoo Finance query2 Search API
   try {
     const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(
-      query
-    )}&quotesCount=15&newsCount=0&enableFuzzyQuery=true`;
-    const data = await fetchWithRetry(url);
+      cleanQuery
+    )}&quotesCount=20&newsCount=0&enableFuzzyQuery=true`;
+    const data = await fetchWithRetry(url, {}, 1, 4000);
     const quotes = data?.quotes || [];
 
-    const indianQuotes = quotes
-      .filter((q) => {
-        const sym = q.symbol || '';
-        return sym.endsWith('.NS') || sym.endsWith('.BO') || q.exchange === 'NSI' || q.exchange === 'BSE';
-      })
-      .map((q) => {
-        const isBSE = q.symbol.endsWith('.BO');
-        const cleanSymbol = q.symbol.replace(/\.(NS|BO)$/, '');
-        return {
+    const indianQuotes = quotes.filter((q) => {
+      const sym = q.symbol || '';
+      return sym.endsWith('.NS') || sym.endsWith('.BO') || q.exchange === 'NSI' || q.exchange === 'BSE';
+    });
+
+    for (const q of indianQuotes) {
+      const isBSE = q.symbol.endsWith('.BO');
+      const cleanSymbol = q.symbol.replace(/\.(NS|BO)$/i, '');
+      const key = cleanSymbol.toUpperCase();
+
+      if (!resultsMap.has(key)) {
+        resultsMap.set(key, {
           symbol: q.symbol,
           cleanSymbol,
           name: q.shortname || q.longname || cleanSymbol,
           exchange: isBSE ? 'BSE' : 'NSE',
           exchangeDisplay: isBSE ? 'BSE' : 'NSE',
           type: q.quoteType || 'EQUITY',
-        };
-      });
-
-    const payload = { results: indianQuotes };
-    setCached(cacheKey, payload);
-    res.json(payload);
+        });
+      }
+    }
   } catch (err) {
-    console.error('Search error:', err.message);
-    res.status(502).json({ error: 'Failed to search symbols', message: err.message });
+    console.warn(`[Search] Yahoo search API failed for "${cleanQuery}":`, err.message);
   }
+
+  // Layer 3: Direct Quote Fallback via v8 chart endpoint
+  // If query is an exact ticker or 6-digit BSE code (e.g. VEEDOL, RELIANCE, TCS, 500325, 590005)
+  // or if results are still empty, query v8 chart directly
+  const alphaNumQuery = cleanQuery.toUpperCase().replace(/[^A-Z0-9&-]/g, '');
+  if (alphaNumQuery.length >= 2) {
+    const candidateSymbols = [];
+    if (/^\d{6}$/.test(alphaNumQuery)) {
+      candidateSymbols.push(`${alphaNumQuery}.BO`);
+    } else {
+      candidateSymbols.push(`${alphaNumQuery}.NS`);
+      candidateSymbols.push(`${alphaNumQuery}.BO`);
+    }
+
+    try {
+      const directQuotes = await Promise.allSettled(candidateSymbols.map((sym) => fetchV8ChartQuote(sym)));
+      for (const dq of directQuotes) {
+        if (dq.status === 'fulfilled' && dq.value && dq.value.price > 0) {
+          const q = dq.value;
+          const isBSE = q.symbol.endsWith('.BO');
+          const cleanSymbol = q.symbol.replace(/\.(NS|BO)$/i, '');
+          const key = cleanSymbol.toUpperCase();
+
+          const existing = resultsMap.get(key);
+          resultsMap.set(key, {
+            symbol: q.symbol,
+            cleanSymbol,
+            bseCode: isBSE ? cleanSymbol : (existing?.bseCode || ''),
+            name: q.shortName || existing?.name || cleanSymbol,
+            sector: existing?.sector || 'Diversified',
+            marketCapCategory: existing?.marketCapCategory || 'Mid Cap',
+            exchange: isBSE ? 'BSE' : 'NSE',
+            exchangeDisplay: isBSE ? 'BSE' : 'NSE',
+            type: 'EQUITY',
+            price: q.price,
+            previousClose: q.previousClose,
+            change: q.change,
+            changePercent: q.changePercent,
+            high52W: q.high52W,
+            low52W: q.low52W,
+            dividendYield: q.dividendYield,
+            latestDividend: q.latestDividend,
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Layer 4: BSE direct lookup if query is 6-digit BSE code
+  if (/^\d{6}$/.test(cleanQuery)) {
+    try {
+      const bseData = await fetchBseData(cleanQuery);
+      if (bseData && (bseData.ltp || bseData.previousClose)) {
+        const cleanSymbol = bseData.symbol || cleanQuery;
+        const key = cleanSymbol.toUpperCase();
+        if (!resultsMap.has(key)) {
+          resultsMap.set(key, {
+            symbol: `${cleanQuery}.BO`,
+            cleanSymbol,
+            bseCode: cleanQuery,
+            name: bseData.basicIndustry ? `${cleanSymbol} (${bseData.basicIndustry})` : cleanSymbol,
+            sector: bseData.basicIndustry || 'Diversified',
+            marketCapCategory: 'Mid Cap',
+            exchange: 'BSE',
+            exchangeDisplay: 'BSE',
+            type: 'EQUITY',
+            price: bseData.ltp || bseData.previousClose,
+            previousClose: bseData.previousClose,
+            high52W: bseData.high52W,
+            low52W: bseData.low52W,
+            dividendYield: bseData.dividendYield,
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  const finalResults = Array.from(resultsMap.values()).slice(0, 20);
+  const payload = { results: finalResults };
+  setCached(cacheKey, payload);
+  res.json(payload);
 });
 
 // 5. Corporate Events (Dividends & Splits) for a symbol

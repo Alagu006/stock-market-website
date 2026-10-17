@@ -2,22 +2,18 @@ import type { Stock, Fundamentals, LiveQuote, MarketIndicesData, CorporateEventD
 
 const DEFAULT_PRODUCTION_API = 'https://stock-market-api-odq1.onrender.com';
 
-function resolveProxyBaseUrl(): string {
-  const envUrl = import.meta.env.VITE_PRICE_SERVER_URL;
+export function getApiBaseUrl(): string {
+  const envUrl = import.meta.env?.VITE_API_BASE_URL || import.meta.env?.VITE_PRICE_SERVER_URL;
   if (envUrl && envUrl.trim().length > 0) {
     return envUrl.trim().replace(/\/$/, '');
   }
-  // If running in browser and not on localhost, automatically connect to the live Render price API
-  if (typeof window !== 'undefined' && window.location) {
-    const host = window.location.hostname;
-    if (host && host !== 'localhost' && host !== '127.0.0.1') {
-      return DEFAULT_PRODUCTION_API;
-    }
+  if (typeof window !== 'undefined' && window.location && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return DEFAULT_PRODUCTION_API;
   }
-  return '';
+  return DEFAULT_PRODUCTION_API; // Always default to live working Render API
 }
 
-export const PROXY_BASE_URL = resolveProxyBaseUrl();
+export const PROXY_BASE_URL = getApiBaseUrl();
 
 /**
  * Checks if the current time is within Indian Stock Market Trading Hours

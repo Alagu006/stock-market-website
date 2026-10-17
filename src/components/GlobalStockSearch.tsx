@@ -14,6 +14,7 @@ import {
   fetchLiveQuotes,
   getYahooSymbolForExchange,
   addStockToRemoteDirectory,
+  applyFeedToStock,
 } from '../services/priceFeed';
 import { db } from '../db';
 import type { Stock, LiveQuote } from '../types';
@@ -92,10 +93,10 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
       }));
   }, [query]);
 
-  // If no bundled matches and query length >= 2, fall back to /api/search
+  // If query length >= 2, search live symbols AND candidate quotes simultaneously
   useEffect(() => {
     const q = query.trim();
-    if (bundledMatches.length > 0 || q.length < 2) {
+    if (q.length < 2) {
       setLiveResults([]);
       setIsSearchingLive(false);
       return;
@@ -104,32 +105,102 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
     let isMounted = true;
     const timer = setTimeout(async () => {
       setIsSearchingLive(true);
-      const results = await searchLiveSymbols(q);
-      if (isMounted) {
-        const mapped: SearchResultItem[] = results.map((r) => ({
-          symbol: r.cleanSymbol,
-          bseCode: r.exchange === 'BSE' ? r.cleanSymbol : '',
-          name: r.name,
-          sector: 'Diversified',
-          marketCapCategory: 'Mid Cap',
-          source: 'live',
-        }));
-        setLiveResults(mapped);
-        setIsSearchingLive(false);
+
+      const cleanCandidate = q.toUpperCase().replace(/[^A-Z0-9&-]/g, '');
+      const candidateSymbols = /^\d{6}$/.test(cleanCandidate)
+        ? [`${cleanCandidate}.BO`]
+        : [`${cleanCandidate}.NS`, `${cleanCandidate}.BO`];
+
+      try {
+        const [remoteResults, directQuotes] = await Promise.all([
+          searchLiveSymbols(q),
+          fetchLiveQuotes(candidateSymbols),
+        ]);
+
+        if (isMounted) {
+          const mappedFromRemote: SearchResultItem[] = remoteResults.map((r: any) => ({
+            symbol: r.cleanSymbol || r.symbol.replace(/\.(NS|BO)$/i, ''),
+            bseCode: r.bseCode || (r.exchange === 'BSE' ? r.cleanSymbol : ''),
+            name: r.name,
+            sector: r.sector || 'Diversified',
+            marketCapCategory: r.marketCapCategory || 'Mid Cap',
+            source: 'live',
+          }));
+
+          const mappedFromDirectQuotes: SearchResultItem[] = [];
+          for (const dq of directQuotes) {
+            if (dq && dq.price > 0) {
+              const isBSE = dq.symbol.endsWith('.BO');
+              const clean = dq.symbol.replace(/\.(NS|BO)$/i, '').toUpperCase();
+              mappedFromDirectQuotes.push({
+                symbol: clean,
+                bseCode: isBSE ? clean : '',
+                name: dq.shortName || clean,
+                sector: 'Diversified',
+                marketCapCategory: 'Mid Cap',
+                source: 'live',
+              });
+              setResultQuotes((prev) => {
+                const next = new Map(prev);
+                next.set(clean, dq);
+                return next;
+              });
+            }
+          }
+
+          const seen = new Set<string>();
+          const merged: SearchResultItem[] = [];
+          for (const item of [...mappedFromDirectQuotes, ...mappedFromRemote]) {
+            const sym = item.symbol.toUpperCase();
+            if (!seen.has(sym)) {
+              seen.add(sym);
+              merged.push(item);
+            }
+          }
+
+          setLiveResults(merged);
+          setIsSearchingLive(false);
+        }
+      } catch (err) {
+        if (isMounted) {
+          setIsSearchingLive(false);
+        }
       }
-    }, 350);
+    }, 300);
 
     return () => {
       isMounted = false;
       clearTimeout(timer);
     };
-  }, [query, bundledMatches.length]);
+  }, [query]);
 
+  // Combine local bundled matches and live results
   const combinedResults = useMemo(() => {
-    return bundledMatches.length > 0 ? bundledMatches : liveResults;
+    const seen = new Set<string>();
+    const list: SearchResultItem[] = [];
+
+    // Bundled matches first
+    for (const b of bundledMatches) {
+      const sym = b.symbol.toUpperCase();
+      if (!seen.has(sym)) {
+        seen.add(sym);
+        list.push(b);
+      }
+    }
+
+    // Then live results
+    for (const l of liveResults) {
+      const sym = l.symbol.toUpperCase();
+      if (!seen.has(sym)) {
+        seen.add(sym);
+        list.push(l);
+      }
+    }
+
+    return list.slice(0, 10);
   }, [bundledMatches, liveResults]);
 
-  // Fetch live quotes (including CMP and latest dividend info) for results
+  // Fetch live quotes (including CMP, P/E, and latest dividend info) for visible results
   useEffect(() => {
     if (combinedResults.length === 0) return;
     let isCurrent = true;
@@ -137,12 +208,14 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
     const symbols = combinedResults.map((r) => getYahooSymbolForExchange(r, 'NSE'));
     fetchLiveQuotes(symbols).then((quotes) => {
       if (!isCurrent) return;
-      const map = new Map<string, LiveQuote>();
-      quotes.forEach((q) => {
-        const clean = q.symbol.replace(/\.(NS|BO)$/i, '').toUpperCase();
-        map.set(clean, q);
+      setResultQuotes((prev) => {
+        const next = new Map(prev);
+        quotes.forEach((q) => {
+          const clean = q.symbol.replace(/\.(NS|BO)$/i, '').toUpperCase();
+          next.set(clean, q);
+        });
+        return next;
       });
-      setResultQuotes(map);
     });
 
     return () => {
@@ -185,7 +258,7 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
   };
 
   const handleSelectResult = async (item: SearchResultItem) => {
-    // Task 4: Auto-add to directory on server and local DB
+    // 1. Auto-append to backend stocks-directory.json
     addStockToRemoteDirectory({
       nseSymbol: item.symbol,
       bseCode: item.bseCode,
@@ -194,13 +267,61 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
       marketCapCategory: item.marketCapCategory,
     }).catch(() => {});
 
-    const existing = existingSymbolsMap.get(item.symbol.toUpperCase());
-    if (existing && existing.id && onNavigateToStock) {
-      onNavigateToStock(existing.id);
+    // 2. Fetch live quote if not in cache
+    let quote = resultQuotes.get(item.symbol.toUpperCase());
+    if (!quote) {
+      const quotes = await fetchLiveQuotes([`${item.symbol}.NS`, `${item.symbol}.BO`]);
+      if (quotes[0]) quote = quotes[0];
+    }
+    const cmp = quote?.price || 0;
+
+    // 3. Save or update in IndexedDB with all live quote fields applied via applyFeedToStock
+    let stockId = 0;
+    try {
+      const existingInDb = await db.stocks.where('symbol').equals(item.symbol).first();
+      if (!existingInDb) {
+        let baseStock: Stock = {
+          symbol: item.symbol,
+          bseCode: item.bseCode || (item.source === 'live' && /^\d{6}$/.test(item.symbol) ? item.symbol : '000000'),
+          name: item.name,
+          sector: item.sector || 'Diversified',
+          marketCapCategory: (item.marketCapCategory as any) || 'Mid Cap',
+          createdAt: new Date().toISOString(),
+        };
+        if (quote) {
+          baseStock = applyFeedToStock(baseStock, { quote });
+        }
+        const newId = await db.stocks.add(baseStock);
+        stockId = Number(newId);
+      } else {
+        stockId = existingInDb.id!;
+        if (quote) {
+          const updated = applyFeedToStock(existingInDb, { quote });
+          await db.stocks.put(updated);
+        }
+      }
+    } catch (e) {
+      console.warn('Error saving to IndexedDB:', e);
+    }
+
+    // 4. Open in view
+    if (stockId > 0 && onNavigateToStock) {
+      onNavigateToStock(stockId);
       setIsOpen(false);
       setQuery('');
     } else {
-      setSelectedStockForImport(item);
+      await onImportStock(
+        {
+          symbol: item.symbol,
+          bseCode: item.bseCode || '000000',
+          name: item.name,
+          sector: item.sector || 'Diversified',
+          marketCapCategory: (item.marketCapCategory as any) || 'Mid Cap',
+        },
+        cmp > 0 ? cmp : undefined
+      );
+      setIsOpen(false);
+      setQuery('');
     }
   };
 
@@ -209,54 +330,11 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
     setIsImporting(true);
 
     try {
-      // Task 4: Auto-add to backend stocks-directory.json and IndexedDB
-      await addStockToRemoteDirectory({
-        nseSymbol: selectedStockForImport.symbol,
-        bseCode: selectedStockForImport.bseCode,
-        name: selectedStockForImport.name,
-        sector: selectedStockForImport.sector,
-        marketCapCategory: selectedStockForImport.marketCapCategory,
-      });
-
-      // Also ensure stock is persisted into IndexedDB `stocks` table
-      try {
-        const existingInDb = await db.stocks.where('symbol').equals(selectedStockForImport.symbol).first();
-        if (!existingInDb) {
-          await db.stocks.add({
-            symbol: selectedStockForImport.symbol,
-            bseCode: selectedStockForImport.bseCode || '000000',
-            name: selectedStockForImport.name,
-            sector: selectedStockForImport.sector || 'Diversified',
-            marketCapCategory: (selectedStockForImport.marketCapCategory as any) || 'Mid Cap',
-            createdAt: new Date().toISOString(),
-          });
-        }
-      } catch (e) {
-        // Ignored if already added
-      }
-
-      // Fetch live quote for initial price
-      const yahooSym = getYahooSymbolForExchange(selectedStockForImport, 'NSE');
-      const quotes = await fetchLiveQuotes([yahooSym]);
-      const cmp = quotes[0]?.price || 0;
-
-      await onImportStock(
-        {
-          symbol: selectedStockForImport.symbol,
-          bseCode: selectedStockForImport.bseCode || '000000',
-          name: selectedStockForImport.name,
-          sector: selectedStockForImport.sector || 'Diversified',
-          marketCapCategory: (selectedStockForImport.marketCapCategory as any) || 'Mid Cap',
-        },
-        cmp > 0 ? cmp : undefined
-      );
-
+      await handleSelectResult(selectedStockForImport);
       setImportSuccessSymbol(selectedStockForImport.symbol);
       setTimeout(() => {
         setImportSuccessSymbol(null);
         setSelectedStockForImport(null);
-        setIsOpen(false);
-        setQuery('');
       }, 1000);
     } finally {
       setIsImporting(false);
@@ -364,6 +442,13 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
                         </span>
                       )}
 
+                      {/* P/E badge */}
+                      {quote && quote.pe ? (
+                        <span className="inline-flex items-center text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+                          PE: {quote.pe}x
+                        </span>
+                      ) : null}
+
                       {/* TASK 2: Prominently badged Dividend Yield & Latest Dividend in Search Dropdown */}
                       {quote && (quote.dividendYield || quote.latestDividend) && (
                         <span
@@ -394,13 +479,25 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
 
                 <div className="flex items-center gap-2.5 shrink-0">
                   {quote?.price ? (
-                    <span className="text-xs font-bold text-emerald-400 tabular-nums">
-                      {formatINR(quote.price)}
-                    </span>
+                    <div className="flex flex-col items-end">
+                      <span className="text-xs font-bold text-white tabular-nums">
+                        {formatINR(quote.price)}
+                      </span>
+                      {quote.changePercent !== undefined && quote.changePercent !== null ? (
+                        <span
+                          className={`text-[10px] font-bold tabular-nums ${
+                            quote.changePercent >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                          }`}
+                        >
+                          {quote.changePercent >= 0 ? '+' : ''}
+                          {quote.changePercent.toFixed(2)}%
+                        </span>
+                      ) : null}
+                    </div>
                   ) : null}
 
                   {isAlreadyAdded ? (
-                    <span className="text-[10px] font-semibold text-emerald-400 flex items-center gap-0.5 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                    <span className="text-[10px] font-semibold text-emerald-400 flex items-center gap-0.5 bg-emerald-500/10 px-2 py-1 rounded">
                       <Check className="w-3 h-3" />
                       <span>In Master</span>
                     </span>
@@ -409,12 +506,12 @@ export const GlobalStockSearch: React.FC<GlobalStockSearchProps> = ({
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setSelectedStockForImport(item);
+                        handleSelectResult(item);
                       }}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[10px] font-bold shadow-sm transition-all cursor-pointer"
+                      className="flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[10px] font-bold shadow-sm transition-all cursor-pointer"
                     >
                       <PlusCircle className="w-3 h-3" />
-                      <span>Import</span>
+                      <span>Add</span>
                     </button>
                   )}
                 </div>
