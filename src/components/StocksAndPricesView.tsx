@@ -21,6 +21,7 @@ interface StocksAndPricesViewProps {
   costMethod: CostMethod;
   searchQuery: string;
   fundamentalsList?: Fundamentals[];
+  liveQuotesMap?: Map<string, any>;
   onOpenPriceUpdate: (stockId: number) => void;
   onOpenAddTx: (stockId: number) => void;
   onOpenStockMaster: () => void;
@@ -36,6 +37,7 @@ export const StocksAndPricesView: React.FC<StocksAndPricesViewProps> = ({
   costMethod,
   searchQuery,
   fundamentalsList = [],
+  liveQuotesMap,
   onOpenPriceUpdate,
   onOpenAddTx,
   onOpenStockMaster,
@@ -90,8 +92,22 @@ export const StocksAndPricesView: React.FC<StocksAndPricesViewProps> = ({
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredStocks.map((stock) => {
+          const cleanSym = stock.symbol.trim().toUpperCase();
+          const liveQuote =
+            liveQuotesMap?.get(`${cleanSym}.NS`) ||
+            liveQuotesMap?.get(`${cleanSym}.BO`) ||
+            liveQuotesMap?.get(cleanSym) ||
+            (stock.bseCode ? liveQuotesMap?.get(stock.bseCode.trim()) : undefined) ||
+            (stock.bseCode ? liveQuotesMap?.get(`${stock.bseCode.trim()}.BO`) : undefined);
+
           const priceInfo = latestPriceMap.get(stock.id!);
-          const isStale = !priceInfo || isDateOlderThanDays(priceInfo.date, 7);
+          const livePrice = liveQuote && liveQuote.price > 0 ? liveQuote.price : undefined;
+          const displayPrice = livePrice || stock.currentPrice || priceInfo?.price || stock.vwap || stock.targetBuyPrice || 0;
+          const isLive = Boolean(livePrice || stock.currentPrice);
+          const isStale = !isLive && (!priceInfo || isDateOlderThanDays(priceInfo.date, 7));
+
+          const dayChange = liveQuote?.change ?? stock.dayChange;
+          const dayChangePercent = liveQuote?.changePercent ?? stock.dayChangePercent;
           const pos = calculateStockPosition(stock.id!, transactions, corporateActions, costMethod);
           const fund = fundamentalsList.find((f) => f.stockId === stock.id);
 
@@ -142,7 +158,7 @@ export const StocksAndPricesView: React.FC<StocksAndPricesViewProps> = ({
                 {/* Price Display */}
                 <div className="p-3 bg-slate-900/80 border border-slate-800/80 rounded-xl my-3">
                   <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
-                    <span>{priceInfo ? 'Recorded Price / CMP' : (stock.targetBuyPrice || stock.vwap ? 'Live Market Price (CMP)' : 'Manual Price')}</span>
+                    <span className="font-medium">{isLive ? 'Live Market Price (CMP)' : (priceInfo ? 'Recorded Price / CMP' : 'Manual Price')}</span>
                     <button
                       onClick={() => onOpenPriceUpdate(stock.id!)}
                       className="text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 text-[11px]"
@@ -153,16 +169,26 @@ export const StocksAndPricesView: React.FC<StocksAndPricesViewProps> = ({
                   </div>
 
                   <div className="flex items-baseline justify-between">
-                    <div className="text-xl font-extrabold text-white tabular-nums">
-                      {priceInfo
-                        ? formatINR(priceInfo.price)
-                        : (stock.targetBuyPrice || stock.vwap)
-                        ? formatINR(stock.targetBuyPrice || stock.vwap!)
-                        : 'No price set'}
+                    <div className="text-xl font-extrabold text-white tabular-nums flex items-baseline gap-2">
+                      <span>{displayPrice > 0 ? formatINR(displayPrice) : 'No price set'}</span>
+                      {dayChange !== undefined && dayChangePercent !== undefined ? (
+                        <span
+                          className={`text-xs font-bold ${
+                            dayChange >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                          }`}
+                        >
+                          {dayChange >= 0 ? '+' : ''}{dayChange.toFixed(2)} ({dayChangePercent >= 0 ? '+' : ''}{dayChangePercent.toFixed(2)}%)
+                        </span>
+                      ) : null}
                     </div>
 
                     <div>
-                      {priceInfo ? (
+                      {isLive ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          <span>Live Stream</span>
+                        </span>
+                      ) : priceInfo ? (
                         isStale ? (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
                             <AlertTriangle className="w-3 h-3" />
@@ -174,21 +200,20 @@ export const StocksAndPricesView: React.FC<StocksAndPricesViewProps> = ({
                             <span>{formatDaysAgo(priceInfo?.date)}</span>
                           </span>
                         )
-                      ) : (stock.targetBuyPrice || stock.vwap) ? (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                          Live Feed
-                        </span>
                       ) : null}
                     </div>
                   </div>
 
-                  {priceInfo ? (
+                  {isLive ? (
+                    <div className="text-[10px] text-slate-400 mt-1 flex items-center justify-between">
+                      <span>Real-time feed via NSE/BSE</span>
+                      {liveQuote?.previousClose ? (
+                        <span className="text-slate-500">Prev Close: ₹{liveQuote.previousClose.toLocaleString('en-IN')}</span>
+                      ) : null}
+                    </div>
+                  ) : priceInfo ? (
                     <div className="text-[10px] text-slate-500 mt-1">
                       Recorded on: {formatDateDDMMYYYY(priceInfo.date)}
-                    </div>
-                  ) : (stock.targetBuyPrice || stock.vwap) ? (
-                    <div className="text-[10px] text-slate-400 mt-1">
-                      Fetched from Yahoo / BSE real-time stream
                     </div>
                   ) : null}
                 </div>

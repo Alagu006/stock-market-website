@@ -285,6 +285,7 @@ export async function seedSampleIndianPortfolio(): Promise<void> {
     db.corporateActions,
     db.dividendRecords,
     db.fundamentals,
+    db.benchmarkRecords,
     db.settings,
   ], async () => {
     await db.stocks.clear();

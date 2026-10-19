@@ -85,7 +85,7 @@ export const HoldingsTable: React.FC<HoldingsTableProps> = ({
               <th className="py-3 px-4">Stock</th>
               <th className="py-3 px-3 text-right">Qty / Lots</th>
               <th className="py-3 px-3 text-right">Avg Price</th>
-              <th className="py-3 px-3 text-right">Manual Price</th>
+              <th className="py-3 px-3 text-right">Live CMP</th>
               <th className="py-3 px-4 text-right">Invested</th>
               <th className="py-3 px-4 text-right">Current Value</th>
               <th className="py-3 px-4 text-right">Unrealized P&L</th>
@@ -129,22 +129,38 @@ export const HoldingsTable: React.FC<HoldingsTableProps> = ({
                     <div className="text-[10px] text-slate-500 uppercase">{costMethod === 'FIFO' ? 'FIFO' : 'W.Avg'}</div>
                   </td>
 
-                  {/* Live / Manual Price with Last Updated Date & Stale warning */}
+                  {/* Live CMP with Day Change & Feed status */}
                   <td className="py-3.5 px-3 text-right tabular-nums">
-                    <div className="font-semibold text-white">
+                    <div className="font-bold text-white text-sm">
                       {formatINR(h.currentPrice, { showSymbol: false })}
                     </div>
+                    {h.priceChange !== undefined && h.priceChangePercent !== undefined ? (
+                      <div
+                        className={`text-[11px] font-bold flex items-center justify-end gap-0.5 ${
+                          h.priceChange >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                        }`}
+                      >
+                        {h.priceChange >= 0 ? '+' : ''}
+                        {h.priceChange.toFixed(2)} ({h.priceChangePercent >= 0 ? '+' : ''}
+                        {h.priceChangePercent.toFixed(2)}%)
+                      </div>
+                    ) : null}
                     <div className="flex items-center justify-end gap-1 text-[10px] mt-0.5">
-                      {h.isPriceStale ? (
+                      {h.isLive ? (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[9px] font-bold">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          <span>Live Feed</span>
+                        </span>
+                      ) : h.isPriceStale ? (
                         <span
-                          className="inline-flex items-center gap-0.5 px-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                          className="inline-flex items-center gap-0.5 px-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 text-[9px] font-bold"
                           title={`Price last updated on ${formatDateDDMMYYYY(h.lastPriceDate)} (> 7 days ago)`}
                         >
                           <AlertTriangle className="w-2.5 h-2.5 text-amber-400" />
                           <span>Stale</span>
                         </span>
                       ) : (
-                        <span className="text-slate-400 flex items-center gap-0.5" title={formatDateDDMMYYYY(h.lastPriceDate)}>
+                        <span className="text-slate-400 flex items-center gap-0.5 text-[10px]" title={formatDateDDMMYYYY(h.lastPriceDate)}>
                           <Clock className="w-2.5 h-2.5 text-slate-500" />
                           <span>{formatDaysAgo(h.lastPriceDate)}</span>
                         </span>

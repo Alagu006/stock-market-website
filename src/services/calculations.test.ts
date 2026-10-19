@@ -17,8 +17,10 @@ import {
   calculateIntrinsicValue,
   calculateMarginOfSafety,
   simulateStockCompounding,
+  calculateAllHoldings,
+  calculatePortfolioKPIs,
 } from './calculations';
-import type { Transaction, CorporateAction, Stock, Fundamentals } from '../types';
+import type { Transaction, CorporateAction, Stock, Fundamentals, LiveQuote } from '../types';
 
 describe('Dalal Diary\'s Core Calculations Engine', () => {
   const stockId = 1;
@@ -448,5 +450,115 @@ describe('Dalal Diary\'s Core Calculations Engine', () => {
       expect(res.totalCharges).toBeGreaterThan(0); // Brokerage & STT deducted
     });
   });
+
+  describe('Live Price Feeds and Real-Time Calculations', () => {
+    const sampleStock: Stock = {
+      id: 1,
+      symbol: 'RELIANCE',
+      bseCode: '500325',
+      name: 'Reliance Industries Ltd',
+      sector: 'Energy',
+      marketCapCategory: 'Large Cap',
+      currentPrice: 2800,
+      previousClose: 2750,
+      dayChange: 50,
+      dayChangePercent: 1.82,
+      createdAt: '2024-01-01',
+    };
+
+    const sampleTx: Transaction = {
+      id: 101,
+      stockId: 1,
+      symbol: 'RELIANCE',
+      type: 'BUY',
+      date: '2024-01-10',
+      quantity: 10,
+      price: 2500,
+      createdAt: '2024-01-10',
+    };
+
+    it('prioritizes liveQuotesMap when computing currentPrice, priceChange, and isLive flag', () => {
+      const liveQuotesMap = new Map<string, LiveQuote>();
+      liveQuotesMap.set('RELIANCE.NS', {
+        symbol: 'RELIANCE.NS',
+        shortName: 'Reliance Industries',
+        price: 2950.50,
+        change: 150.50,
+        changePercent: 5.37,
+        previousClose: 2800.00,
+        dayHigh: 2980.00,
+        dayLow: 2810.00,
+        high52W: 3100.00,
+        low52W: 2200.00,
+        timestamp: new Date().toISOString(),
+      });
+
+      const holdings = calculateAllHoldings(
+        [sampleStock],
+        [sampleTx],
+        [],
+        [],
+        [],
+        'Average Cost',
+        liveQuotesMap
+      );
+
+      expect(holdings).toHaveLength(1);
+      const h = holdings[0];
+      expect(h.currentPrice).toBe(2950.50);
+      expect(h.isLive).toBe(true);
+      expect(h.priceChange).toBe(150.50);
+      expect(h.priceChangePercent).toBe(5.37);
+      expect(h.previousPrice).toBe(2800.00);
+      expect(h.dayHigh).toBe(2980.00);
+      expect(h.dayLow).toBe(2810.00);
+      expect(h.high52W).toBe(3100.00);
+      expect(h.low52W).toBe(2200.00);
+      // Value: 10 shares * 2950.50 = 29505
+      expect(h.currentValue).toBe(29505);
+      // Invested: 10 * 2500 = 25000 -> P&L = +4505
+      expect(h.unrealizedPnL).toBe(4505);
+    });
+
+    it('correctly calculates portfolio KPIs with day change from live holdings', () => {
+      const liveQuotesMap = new Map<string, LiveQuote>();
+      liveQuotesMap.set('RELIANCE.NS', {
+        symbol: 'RELIANCE.NS',
+        shortName: 'Reliance Industries',
+        price: 2900,
+        change: 100, // +100 per share
+        changePercent: 3.57,
+        previousClose: 2800,
+        timestamp: new Date().toISOString(),
+      });
+
+      const holdings = calculateAllHoldings(
+        [sampleStock],
+        [sampleTx],
+        [],
+        [],
+        [],
+        'Average Cost',
+        liveQuotesMap
+      );
+
+      const kpis = calculatePortfolioKPIs(
+        holdings,
+        [sampleStock],
+        [sampleTx],
+        [],
+        'Average Cost'
+      );
+
+      expect(kpis.totalInvested).toBe(25000); // 10 * 2500
+      expect(kpis.currentValue).toBe(29000); // 10 * 2900
+      expect(kpis.unrealizedPnL).toBe(4000);
+      // Day change: 10 shares * 100 = 1000
+      expect(kpis.dayChangeValue).toBe(1000);
+      // Previous total value: 10 * 2800 = 28000. Day change % = (1000 / 28000) * 100 = 3.5714...
+      expect(kpis.dayChangePercent).toBeCloseTo(3.5714, 2);
+    });
+  });
 });
+
 

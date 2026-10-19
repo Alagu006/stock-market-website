@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { X, History } from 'lucide-react';
+import { X, History, RefreshCw } from 'lucide-react';
 import type { Stock, PriceRecord } from '../types';
 import { formatINR, formatDateDDMMYYYY } from '../utils/formatters';
+import { fetchLiveQuotes } from '../services/priceFeed';
 
 interface PriceUpdateModalProps {
   isOpen: boolean;
@@ -21,6 +22,7 @@ export const PriceUpdateModal: React.FC<PriceUpdateModalProps> = ({
   const [newPrice, setNewPrice] = useState<string>('');
   const [date, setDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isFetchingLive, setIsFetchingLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const stockPriceHistory = React.useMemo(() => {
@@ -39,6 +41,31 @@ export const PriceUpdateModal: React.FC<PriceUpdateModalProps> = ({
     setDate(new Date().toISOString().split('T')[0]);
     setError(null);
   }, [stock, stockPriceHistory.length, isOpen]);
+
+  const handleFetchLivePrice = async () => {
+    if (!stock) return;
+    setIsFetchingLive(true);
+    setError(null);
+    try {
+      const sym = stock.symbol.trim().toUpperCase();
+      const targets = [`${sym}.NS`, `${sym}.BO`];
+      if (stock.bseCode && /^\d{6}$/.test(stock.bseCode.trim())) {
+        targets.push(`${stock.bseCode.trim()}.BO`);
+      }
+      const quotes = await fetchLiveQuotes(targets);
+      const q = quotes.find((x) => x && x.price > 0);
+      if (q && q.price > 0) {
+        setNewPrice(String(q.price));
+        setDate(new Date().toISOString().split('T')[0]);
+      } else {
+        setError('No live quote returned from exchange stream.');
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Failed to fetch live price.');
+    } finally {
+      setIsFetchingLive(false);
+    }
+  };
 
   if (!isOpen || !stock) return null;
 
@@ -93,9 +120,21 @@ export const PriceUpdateModal: React.FC<PriceUpdateModalProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider">
-                Current / Manual Price (₹) *
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                  Current / Manual Price (₹) *
+                </label>
+                <button
+                  type="button"
+                  onClick={handleFetchLivePrice}
+                  disabled={isFetchingLive}
+                  className="flex items-center gap-1 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition-colors disabled:opacity-50 cursor-pointer"
+                  title="Fetch live quote from exchange"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isFetchingLive ? 'animate-spin' : ''}`} />
+                  <span>{isFetchingLive ? 'Fetching...' : 'Fetch Live CMP'}</span>
+                </button>
+              </div>
               <input
                 type="number"
                 step="0.05"

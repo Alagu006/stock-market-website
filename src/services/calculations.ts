@@ -11,6 +11,7 @@ import type {
   LotHistoryItem,
   DividendRecord,
   NSEChargesBreakdown,
+  LiveQuote,
 } from '../types';
 import { isDateOlderThanDays } from '../utils/formatters';
 
@@ -536,7 +537,8 @@ export function calculateAllHoldings(
   corporateActions: CorporateAction[],
   priceRecords: PriceRecord[],
   fundamentalsList: Fundamentals[],
-  costMethod: CostMethod = 'Average Cost'
+  costMethod: CostMethod = 'Average Cost',
+  liveQuotesMap?: Map<string, LiveQuote>
 ): HoldingCalculation[] {
   // Map latest prices and previous price
   const priceMap = new Map<number, { latestPrice: number; latestDate: string; prevPrice?: number }>();
@@ -574,12 +576,56 @@ export function calculateAllHoldings(
     // We only display active holdings (quantity > 0) in the Holdings table
     if (pos.quantity <= 0) continue;
 
+    const cleanSym = stock.symbol.trim().toUpperCase();
+    const liveQuote =
+      liveQuotesMap?.get(`${cleanSym}.NS`) ||
+      liveQuotesMap?.get(`${cleanSym}.BO`) ||
+      liveQuotesMap?.get(cleanSym) ||
+      (stock.bseCode ? liveQuotesMap?.get(stock.bseCode.trim()) : undefined) ||
+      (stock.bseCode ? liveQuotesMap?.get(`${stock.bseCode.trim()}.BO`) : undefined);
+
     const priceInfo = priceMap.get(stock.id);
-    const currentPrice = priceInfo
-      ? priceInfo.latestPrice
-      : (stock.vwap || pos.averageBuyPrice || stock.targetBuyPrice || 0);
-    const lastPriceDate = priceInfo ? priceInfo.latestDate : null;
-    const isPriceStale = !priceInfo || isDateOlderThanDays(lastPriceDate, 7);
+    const livePrice = liveQuote && liveQuote.price > 0 ? liveQuote.price : undefined;
+    const stockSavedPrice = stock.currentPrice && stock.currentPrice > 0 ? stock.currentPrice : undefined;
+    const recordedPrice = priceInfo ? priceInfo.latestPrice : undefined;
+
+    const currentPrice =
+      livePrice ??
+      stockSavedPrice ??
+      recordedPrice ??
+      (stock.vwap && stock.vwap > 0 ? stock.vwap : undefined) ??
+      pos.averageBuyPrice ??
+      (stock.targetBuyPrice && stock.targetBuyPrice > 0 ? stock.targetBuyPrice : 0);
+
+    const isLive = Boolean(livePrice || (stock.priceSource === 'live' && stockSavedPrice));
+    const lastPriceDate = isLive
+      ? new Date().toISOString().split('T')[0]
+      : (priceInfo ? priceInfo.latestDate : (stock.lastPriceUpdate ? stock.lastPriceUpdate.split('T')[0] : null));
+    const isPriceStale = !isLive && (!lastPriceDate || isDateOlderThanDays(lastPriceDate, 7));
+
+    let priceChange: number | undefined;
+    let priceChangePercent: number | undefined;
+    let previousPrice: number | undefined;
+
+    if (liveQuote) {
+      if (liveQuote.change !== undefined && liveQuote.change !== null) {
+        priceChange = liveQuote.change;
+      }
+      if (liveQuote.changePercent !== undefined && liveQuote.changePercent !== null) {
+        priceChangePercent = liveQuote.changePercent;
+      }
+      if (liveQuote.previousClose) {
+        previousPrice = liveQuote.previousClose;
+      }
+    } else if (stock.dayChange !== undefined || stock.previousClose !== undefined) {
+      priceChange = stock.dayChange;
+      priceChangePercent = stock.dayChangePercent;
+      previousPrice = stock.previousClose;
+    } else if (priceInfo && priceInfo.prevPrice !== undefined && priceInfo.prevPrice > 0) {
+      previousPrice = priceInfo.prevPrice;
+      priceChange = currentPrice - priceInfo.prevPrice;
+      priceChangePercent = ((currentPrice - priceInfo.prevPrice) / priceInfo.prevPrice) * 100;
+    }
 
     const currentValue = pos.quantity * currentPrice;
     const unrealizedPnL = currentValue - pos.totalCostBasis;
@@ -589,13 +635,6 @@ export function calculateAllHoldings(
     const expectedDiv = stock.expectedDividendPerShare || stock.latestDividendAmount || 0;
     const annualDividendIncome = pos.quantity * expectedDiv;
     const yieldOnCost = pos.totalCostBasis > 0 ? (annualDividendIncome / pos.totalCostBasis) * 100 : 0;
-
-    let priceChange: number | undefined;
-    let priceChangePercent: number | undefined;
-    if (priceInfo && priceInfo.prevPrice !== undefined && priceInfo.prevPrice > 0) {
-      priceChange = currentPrice - priceInfo.prevPrice;
-      priceChangePercent = ((currentPrice - priceInfo.prevPrice) / priceInfo.prevPrice) * 100;
-    }
 
     holdings.push({
       stock,
@@ -614,9 +653,14 @@ export function calculateAllHoldings(
       roce: fund?.roce ?? stock.roce ?? null,
       pe: fund?.stockPE ?? stock.peConsolidated ?? stock.peStandalone ?? null,
       lotsCount: pos.activeLotsCount,
-      previousPrice: priceInfo?.prevPrice,
+      previousPrice,
       priceChange,
       priceChangePercent,
+      isLive,
+      dayHigh: liveQuote?.dayHigh ?? stock.dayHigh ?? undefined,
+      dayLow: liveQuote?.dayLow ?? stock.dayLow ?? undefined,
+      high52W: liveQuote?.high52W ?? fund?.high52W ?? stock.high52W ?? undefined,
+      low52W: liveQuote?.low52W ?? fund?.low52W ?? stock.low52W ?? undefined,
     });
   }
 
@@ -645,12 +689,15 @@ export function calculatePortfolioKPIs(
     currentValue += h.currentValue;
     annualDividendIncome += h.annualDividendIncome;
 
-    if (h.previousPrice !== undefined) {
-      dayChangeValue += h.quantity * (h.currentPrice - h.previousPrice);
-      previousTotalValue += h.quantity * h.previousPrice;
-    } else {
-      previousTotalValue += h.currentValue;
-    }
+    const changePerShare = h.priceChange !== undefined
+      ? h.priceChange
+      : (h.previousPrice !== undefined ? h.currentPrice - h.previousPrice : 0);
+    const prevPricePerShare = h.previousPrice !== undefined
+      ? h.previousPrice
+      : (h.currentPrice - changePerShare);
+
+    dayChangeValue += h.quantity * changePerShare;
+    previousTotalValue += h.quantity * prevPricePerShare;
   }
 
   const unrealizedPnL = currentValue - totalInvested;

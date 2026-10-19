@@ -463,6 +463,20 @@ export function applyFeedToStock(
 
   const currentPrice = quote?.price || stock.targetBuyPrice || 0;
 
+  // Real-time price fields
+  if (quote && quote.price > 0 && !isLocked('currentPrice')) {
+    updated.currentPrice = quote.price;
+    if (quote.previousClose) updated.previousClose = quote.previousClose;
+    if (quote.change !== undefined && quote.change !== null) updated.dayChange = quote.change;
+    if (quote.changePercent !== undefined && quote.changePercent !== null) updated.dayChangePercent = quote.changePercent;
+    if (quote.dayHigh) updated.dayHigh = quote.dayHigh;
+    if (quote.dayLow) updated.dayLow = quote.dayLow;
+    if (quote.high52W) updated.high52W = quote.high52W;
+    if (quote.low52W) updated.low52W = quote.low52W;
+    updated.lastPriceUpdate = quote.timestamp || new Date().toISOString();
+    updated.priceSource = 'live';
+  }
+
   // Sector PE: use feed/stock sectorPe, or compute average pe from db.stocks with same sector/basicIndustry
   let sectorPe = fund.sectorPE || stock.sectorPe;
   if (!sectorPe && allStocks.length > 0) {

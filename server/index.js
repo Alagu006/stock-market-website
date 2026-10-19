@@ -143,10 +143,10 @@ async function fetchV8ChartQuote(symbol) {
     const data = await fetchWithRetry(url);
     const chart = data?.chart?.result?.[0];
     const meta = chart?.meta;
-    if (!meta || meta.regularMarketPrice === undefined) return null;
+    const price = meta?.regularMarketPrice ?? meta?.chartPreviousClose ?? 0;
+    if (!meta || price <= 0) return null;
 
-    const previousClose = meta.chartPreviousClose ?? meta.regularMarketPrice ?? 0;
-    const price = meta.regularMarketPrice ?? 0;
+    const previousClose = meta.chartPreviousClose ?? price;
     const change = price - previousClose;
     const changePercent = previousClose > 0 ? (change / previousClose) * 100 : 0;
 

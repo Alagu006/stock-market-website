@@ -53,6 +53,17 @@ export interface Stock {
   dividendYield?: number;
   intrinsicValue?: number;
   marginOfSafety?: number;
+  // Real-time market feed fields
+  currentPrice?: number;
+  previousClose?: number;
+  dayChange?: number;
+  dayChangePercent?: number;
+  dayHigh?: number;
+  dayLow?: number;
+  high52W?: number;
+  low52W?: number;
+  lastPriceUpdate?: string;
+  priceSource?: 'live' | 'manual';
   fieldSources?: Record<string, 'manual' | 'screener' | 'feed'>;
   createdAt: string; // ISO date string
 }
@@ -293,6 +304,11 @@ export interface HoldingCalculation {
   previousPrice?: number;
   priceChange?: number;
   priceChangePercent?: number;
+  isLive?: boolean;
+  dayHigh?: number;
+  dayLow?: number;
+  high52W?: number;
+  low52W?: number;
 }
 
 // Lot breakdown for Lot History modal

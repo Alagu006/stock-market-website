@@ -31,7 +31,6 @@ import {
   checkProxyHealth,
   fetchLiveMarketIndices,
   fetchLiveQuotes,
-  isIndianMarketOpen,
   mergeFeedFundamentals,
   applyFeedToStock,
 } from './services/priceFeed';
@@ -81,6 +80,7 @@ export function App() {
   const [activeExchange, setActiveExchange] = useState<'NSE' | 'BSE'>('NSE');
   const [refreshMode, setRefreshMode] = useState<'Manual' | 'Auto 15s' | 'Auto 30s' | 'Off'>('Auto 15s');
   const [indices, setIndices] = useState<MarketIndicesData | null>(null);
+  const [liveQuotes, setLiveQuotes] = useState<Map<string, LiveQuote>>(new Map());
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const [serverStatus, setServerStatus] = useState<{ isOnline: boolean; message: string }>({
@@ -188,12 +188,14 @@ export function App() {
         }
       }
 
-      if (stocks.length === 0) return;
+      // Query latest stocks directly from DB to avoid stale closures
+      const currentStocks = await db.stocks.toArray();
+      if (currentStocks.length === 0) return;
 
       // B. Build symbols list for all stocks held or watchlisted (NSE and BSE variants)
       const targetSymbols: string[] = [];
 
-      for (const st of stocks) {
+      for (const st of currentStocks) {
         const sym = st.symbol.trim().toUpperCase();
         targetSymbols.push(`${sym}.NS`, `${sym}.BO`);
         if (st.bseCode && /^\d{6}$/.test(st.bseCode.trim())) {
@@ -203,21 +205,38 @@ export function App() {
 
       const quotes = await fetchLiveQuotes(targetSymbols);
       const quotesMap = new Map<string, LiveQuote>();
+
+      // First pass: add all by explicit symbol
       quotes.forEach((q) => {
+        if (!q || !q.symbol) return;
         quotesMap.set(q.symbol.toUpperCase(), q);
-        const clean = q.symbol.replace(/\.(NS|BO)$/i, '').toUpperCase();
-        quotesMap.set(clean, q);
         if ((q as any).bseData?.scripCode) {
           quotesMap.set(String((q as any).bseData.scripCode), q);
         }
+        if ((q as any).bseData?.symbol) {
+          quotesMap.set(String((q as any).bseData.symbol).toUpperCase(), q);
+        }
       });
+
+      // Second pass: map clean symbol prioritizing activeExchange
+      quotes.forEach((q) => {
+        if (!q || !q.symbol) return;
+        const clean = q.symbol.replace(/\.(NS|BO)$/i, '').toUpperCase();
+        const isPreferred = activeExchange === 'NSE' ? q.symbol.endsWith('.NS') : q.symbol.endsWith('.BO');
+        if (isPreferred || !quotesMap.has(clean)) {
+          quotesMap.set(clean, q);
+        }
+      });
+
+      // Immediately set live quotes in React state so all components re-render with live prices instantly
+      setLiveQuotes(quotesMap);
 
       // C. Update Prices in DB (Deduplicating at most one snapshot per stock per day)
       const today = new Date().toISOString().split('T')[0];
       const nowISO = new Date().toISOString();
 
       await db.transaction('rw', [db.stocks, db.priceRecords, db.fundamentals], async () => {
-        for (const st of stocks) {
+        for (const st of currentStocks) {
           if (!st.id) continue;
           const cleanSym = st.symbol.trim().toUpperCase();
           const quote =
@@ -251,7 +270,7 @@ export function App() {
             }
 
             // Keep stock live quote fields in sync
-            const updatedStock = applyFeedToStock(st, { quote }, stocks);
+            const updatedStock = applyFeedToStock(st, { quote }, currentStocks);
             await db.stocks.put(updatedStock);
 
             // Auto-fill empty fundamentals without overwriting user manual/Screener values
@@ -272,7 +291,7 @@ export function App() {
     } finally {
       setIsSyncing(false);
     }
-  }, [stocks, activeExchange]);
+  }, [activeExchange]);
 
   // 3. Auto-Refresh Timer effect
   useEffect(() => {
@@ -286,9 +305,6 @@ export function App() {
     const interval = setInterval(() => {
       // Pause if tab is hidden in background
       if (document.visibilityState !== 'visible') return;
-
-      // Stop auto-refresh outside market hours (show last close)
-      if (!isIndianMarketOpen()) return;
 
       syncLivePrices();
     }, intervalSeconds * 1000);
@@ -304,9 +320,10 @@ export function App() {
       corporateActions,
       priceRecords,
       fundamentalsList,
-      costMethod
+      costMethod,
+      liveQuotes
     );
-  }, [stocks, transactions, corporateActions, priceRecords, fundamentalsList, costMethod]);
+  }, [stocks, transactions, corporateActions, priceRecords, fundamentalsList, costMethod, liveQuotes]);
 
   // Portfolio KPIs
   const portfolioKPIs = useMemo(() => {
@@ -384,6 +401,38 @@ export function App() {
           createdAt: new Date().toISOString(),
         });
       }
+      await db.stocks.update(id, {
+        currentPrice: livePrice,
+        priceSource: 'live',
+        lastPriceUpdate: new Date().toISOString(),
+      });
+    } else {
+      // Immediately fetch live market quote for newly added stock
+      fetchLiveQuotes([`${cleanSym}.NS`, `${cleanSym}.BO`]).then(async (quotes) => {
+        const q = quotes.find((x) => x && x.price > 0);
+        if (q) {
+          const todayDate = new Date().toISOString().split('T')[0];
+          await db.priceRecords.add({
+            stockId: id,
+            symbol: cleanSym,
+            price: q.price,
+            date: todayDate,
+            createdAt: new Date().toISOString(),
+          });
+          const curr = await db.stocks.get(id);
+          if (curr) {
+            const updated = applyFeedToStock(curr, { quote: q });
+            await db.stocks.put(updated);
+          }
+          setLiveQuotes((prev) => {
+            const next = new Map(prev);
+            next.set(`${cleanSym}.NS`, q);
+            next.set(`${cleanSym}.BO`, q);
+            next.set(cleanSym, q);
+            return next;
+          });
+        }
+      }).catch(() => {});
     }
   };
 
@@ -563,6 +612,15 @@ export function App() {
     setActiveTab('xray');
   };
 
+  const handleSeedSampleData = async () => {
+    try {
+      await seedSampleIndianPortfolio();
+      await syncLivePrices();
+    } catch (err) {
+      console.error('Failed to seed sample data:', err);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#0b0f17] text-slate-100 flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
       {/* Top Indices Ribbon (NIFTY 50, SENSEX, NIFTY BANK & Live Feed Controls) */}
@@ -616,7 +674,7 @@ export function App() {
               onOpenTargetAvg={(stockId) => setTargetAvgStockId(stockId)}
               onOpenAddTxForStock={(stockId) => handlePreFillBuy(stockId)}
               onOpenPriceUpdate={(stockId) => setPriceUpdateStockId(stockId)}
-              onSeedSampleData={seedSampleIndianPortfolio}
+              onSeedSampleData={handleSeedSampleData}
               onOpenStockMaster={() => setIsStockMasterOpen(true)}
             />
           </>
@@ -632,6 +690,7 @@ export function App() {
             costMethod={costMethod}
             searchQuery=""
             fundamentalsList={fundamentalsList}
+            liveQuotesMap={liveQuotes}
             onOpenPriceUpdate={(stockId) => setPriceUpdateStockId(stockId)}
             onOpenAddTx={(stockId) => handlePreFillBuy(stockId)}
             onOpenStockMaster={() => setIsStockMasterOpen(true)}
@@ -716,6 +775,7 @@ export function App() {
             fundamentalsList={fundamentalsList}
             priceRecords={priceRecords}
             holdings={allHoldings}
+            liveQuotesMap={liveQuotes}
             onToggleWatchlist={handleToggleWatchlist}
             onUpdateTargetBuyPrice={handleUpdateTargetBuyPrice}
             onOpenAddTx={(stockId) => handlePreFillBuy(stockId)}
@@ -857,7 +917,7 @@ export function App() {
         onClose={() => setIsSettingsOpen(false)}
         settings={currentSettings}
         onUpdateSettings={handleUpdateSettings}
-        onLoadDemoData={seedSampleIndianPortfolio}
+        onLoadDemoData={handleSeedSampleData}
         onResetDatabase={handleResetDatabase}
       />
     </div>

@@ -16,6 +16,7 @@ interface WatchlistViewProps {
   fundamentalsList: Fundamentals[];
   priceRecords: PriceRecord[];
   holdings: HoldingCalculation[];
+  liveQuotesMap?: Map<string, any>;
   onToggleWatchlist: (stockId: number, currentStatus: boolean) => Promise<void>;
   onUpdateTargetBuyPrice: (stockId: number, price: number | undefined) => Promise<void>;
   onOpenAddTx: (stockId: number) => void;
@@ -27,6 +28,7 @@ export const WatchlistView: React.FC<WatchlistViewProps> = ({
   fundamentalsList,
   priceRecords,
   holdings,
+  liveQuotesMap,
   onToggleWatchlist,
   onUpdateTargetBuyPrice,
   onOpenAddTx,
@@ -85,8 +87,16 @@ export const WatchlistView: React.FC<WatchlistViewProps> = ({
     const sourceList = watchlistedStocks.length > 0 ? watchlistedStocks : stocks;
 
     return sourceList.map((stock) => {
+      const cleanSym = stock.symbol.trim().toUpperCase();
+      const liveQuote =
+        liveQuotesMap?.get(`${cleanSym}.NS`) ||
+        liveQuotesMap?.get(`${cleanSym}.BO`) ||
+        liveQuotesMap?.get(cleanSym) ||
+        (stock.bseCode ? liveQuotesMap?.get(stock.bseCode.trim()) : undefined) ||
+        (stock.bseCode ? liveQuotesMap?.get(`${stock.bseCode.trim()}.BO`) : undefined);
+
       const priceInfo = stock.id ? latestPriceMap.get(stock.id) : undefined;
-      const cmp = priceInfo?.price || 0;
+      const cmp = liveQuote?.price || stock.currentPrice || priceInfo?.price || 0;
       const fund = stock.id ? fundMap.get(stock.id) : undefined;
       const holding = stock.id ? holdingMap.get(stock.id) : undefined;
       const avgBuy = holding?.averageBuyPrice || 0;
