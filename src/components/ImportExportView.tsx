@@ -12,6 +12,9 @@ import {
   Layers,
   TrendingUp,
   FileCheck,
+  KeyRound,
+  Copy,
+  HelpCircle,
 } from 'lucide-react';
 import type {
   Stock,
@@ -39,6 +42,7 @@ import {
   exportSingleSheetCSV,
   SCREENER_FIELD_DEFINITIONS,
 } from '../services/importExport';
+import { extractTextFromPdf, parseStatementText } from '../services/pdfParser';
 import { formatINR, formatDateDDMMYYYY } from '../utils/formatters';
 
 interface ImportExportViewProps {
@@ -57,7 +61,7 @@ interface ImportExportViewProps {
   onConfirmScreenerFundamentals: (funds: Array<Partial<Fundamentals> & { stockId: number; symbol: string }>) => Promise<void>;
 }
 
-type SubTab = 'stocks' | 'transactions' | 'prices' | 'screener' | 'export';
+type SubTab = 'stocks' | 'transactions' | 'prices' | 'screener' | 'pdf' | 'export';
 
 export const ImportExportView: React.FC<ImportExportViewProps> = ({
   stocks,
@@ -86,21 +90,117 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
   const [screenerMapping, setScreenerMapping] = useState<Record<string, string>>(savedScreenerMapping || {});
   const [isMappingSaved, setIsMappingSaved] = useState(false);
 
+  // PDF Statement State
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfPassword, setPdfPassword] = useState<string>('');
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [pastedStatementText, setPastedStatementText] = useState<string>('');
+  const [activeBrokerGuide, setActiveBrokerGuide] = useState<'zerodha' | 'groww' | 'angel' | 'upstox' | 'cas'>('zerodha');
+
   // Reset file input
   const resetUpload = () => {
     setFileName('');
     setRawParsedRows([]);
     setDetectedColumns([]);
     setStatusMessage(null);
+    setPdfFile(null);
+    setPdfPassword('');
+    setIsPasswordModalOpen(false);
   };
 
-  // Handle file selection (Excel or CSV)
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // PDF file reader handler
+  const handlePdfFile = async (file: File, passwordToTry?: string) => {
+    setFileName(file.name);
+    setPdfFile(file);
+    setIsProcessing(true);
+    setStatusMessage(null);
+
+    try {
+      const pass = passwordToTry !== undefined ? passwordToTry : pdfPassword;
+      const extracted = await extractTextFromPdf(file, pass);
+      const parsed = parseStatementText(extracted.text);
+
+      if (parsed.rows.length === 0) {
+        throw new Error(
+          'Could not automatically detect tabular rows from this PDF. Please open your PDF, copy the table text, and paste it into the "Paste PDF Statement" box below.'
+        );
+      }
+
+      setDetectedColumns(parsed.detectedColumns);
+      setRawParsedRows(parsed.rows);
+      setIsPasswordModalOpen(false);
+      setStatusMessage({
+        type: 'success',
+        text: `Successfully parsed ${parsed.rows.length} rows across ${extracted.pagesCount} PDF pages! Check the preview below.`,
+      });
+
+      if (parsed.detectedType === 'transactions' && activeSubTab !== 'transactions' && activeSubTab !== 'pdf') {
+        setActiveSubTab('transactions');
+      } else if (parsed.detectedType === 'stocks' && activeSubTab !== 'stocks' && activeSubTab !== 'pdf') {
+        setActiveSubTab('stocks');
+      }
+    } catch (err: any) {
+      if (err.message === 'PASSWORD_REQUIRED') {
+        setIsPasswordModalOpen(true);
+        setStatusMessage({
+          type: 'error',
+          text: 'This PDF is password-protected. Enter your password below (typically your PAN in CAPITAL letters or DOB DDMMYYYY) to unlock.',
+        });
+      } else {
+        setStatusMessage({
+          type: 'error',
+          text: err.message || 'Failed to parse PDF statement.',
+        });
+      }
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Handle pasted statement text
+  const handleParsePastedText = () => {
+    if (!pastedStatementText.trim()) return;
+    setIsProcessing(true);
+    try {
+      const parsed = parseStatementText(pastedStatementText);
+      if (parsed.rows.length === 0) {
+        throw new Error('Could not identify table columns. Please ensure you copied rows containing Date, Symbol, Type, and Qty.');
+      }
+      setFileName('Pasted PDF Table');
+      setDetectedColumns(parsed.detectedColumns);
+      setRawParsedRows(parsed.rows);
+      setStatusMessage({
+        type: 'success',
+        text: `Extracted ${parsed.rows.length} rows from pasted text! Review the preview below.`,
+      });
+      if (parsed.detectedType === 'transactions' && activeSubTab !== 'transactions' && activeSubTab !== 'pdf') {
+        setActiveSubTab('transactions');
+      } else if (parsed.detectedType === 'stocks' && activeSubTab !== 'stocks' && activeSubTab !== 'pdf') {
+        setActiveSubTab('stocks');
+      }
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: err.message || 'Failed to parse text.',
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Handle file selection (Excel, CSV, or PDF)
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setStatusMessage(null);
     setFileName(file.name);
+
+    if (file.name.toLowerCase().endsWith('.pdf')) {
+      await handlePdfFile(file);
+      return;
+    }
+
     setIsProcessing(true);
 
     const reader = new FileReader();
@@ -337,6 +437,21 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
 
         <button
           onClick={() => {
+            setActiveSubTab('pdf');
+            resetUpload();
+          }}
+          className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all shrink-0 flex items-center gap-1.5 ${
+            activeSubTab === 'pdf'
+              ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+              : 'text-slate-400 hover:text-white hover:bg-slate-900'
+          }`}
+        >
+          <FileText className="w-3.5 h-3.5 text-purple-400" />
+          <span>5. PDF & Statement Importer</span>
+        </button>
+
+        <button
+          onClick={() => {
             setActiveSubTab('export');
             resetUpload();
           }}
@@ -346,7 +461,7 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
               : 'text-slate-400 hover:text-white hover:bg-slate-900'
           }`}
         >
-          5. Export Center (Excel/CSV)
+          6. Export Center (Excel/CSV)
         </button>
       </div>
 
@@ -388,13 +503,13 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
               <label className="flex-1 w-full cursor-pointer">
                 <input
                   type="file"
-                  accept=".xlsx,.xls,.csv"
+                  accept=".xlsx,.xls,.csv,.pdf"
                   onChange={handleFileChange}
                   className="hidden"
                 />
                 <div className="border-2 border-dashed border-slate-700 hover:border-emerald-500 rounded-xl p-4 text-center text-xs text-slate-300 bg-slate-900/40 transition-all flex items-center justify-center gap-2">
                   <Upload className="w-4 h-4 text-emerald-400" />
-                  <span>{fileName ? `Selected: ${fileName}` : 'Choose Excel or CSV File'}</span>
+                  <span>{fileName ? `Selected: ${fileName}` : 'Choose Excel, CSV, or PDF File'}</span>
                 </div>
               </label>
 
@@ -515,13 +630,13 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
               <label className="flex-1 w-full cursor-pointer">
                 <input
                   type="file"
-                  accept=".xlsx,.xls,.csv"
+                  accept=".xlsx,.xls,.csv,.pdf"
                   onChange={handleFileChange}
                   className="hidden"
                 />
                 <div className="border-2 border-dashed border-slate-700 hover:border-emerald-500 rounded-xl p-4 text-center text-xs text-slate-300 bg-slate-900/40 transition-all flex items-center justify-center gap-2">
                   <Upload className="w-4 h-4 text-emerald-400" />
-                  <span>{fileName ? `Selected: ${fileName}` : 'Choose Transactions File'}</span>
+                  <span>{fileName ? `Selected: ${fileName}` : 'Choose Transactions File (Excel, CSV, or PDF)'}</span>
                 </div>
               </label>
 
@@ -947,7 +1062,393 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
         </div>
       )}
 
-      {/* TAB 5: EXPORT CENTER */}
+      {/* TAB 5: PDF STATEMENT IMPORTER */}
+      {activeSubTab === 'pdf' && (
+        <div className="space-y-6">
+          <div className="bg-[#111827] border border-slate-800 rounded-2xl p-6 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-purple-400" />
+                  <h3 className="text-base font-bold text-white">
+                    PDF Statement & Tradebook Importer
+                  </h3>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-300 border border-purple-500/30">
+                    Zerodha • Groww • Angel One • CAS
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  Upload your broker or CAS statement PDF, unlock password-protected files, or copy-paste text directly from your PDF viewer.
+                </p>
+              </div>
+            </div>
+
+            {/* Password Unlock Box (when encrypted PDF is detected) */}
+            {isPasswordModalOpen && (
+              <div className="p-4 rounded-xl bg-purple-950/40 border border-purple-500/40 text-xs space-y-2 animate-in fade-in duration-200">
+                <div className="flex items-center gap-2 text-purple-300 font-bold">
+                  <KeyRound className="w-4 h-4" />
+                  <span>Encrypted PDF Detected ({fileName})</span>
+                </div>
+                <p className="text-slate-300 text-[11px]">
+                  Indian broker and CAS statements are usually encrypted with your <strong>PAN number</strong> (in UPPERCASE, e.g. <code className="text-purple-300">ABCDE1234F</code>) or <strong>Date of Birth</strong> (e.g. <code className="text-purple-300">DDMMYYYY</code>).
+                </p>
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="password"
+                    value={pdfPassword}
+                    onChange={(e) => setPdfPassword(e.target.value)}
+                    placeholder="Enter PDF password (e.g. PAN or DOB)"
+                    className="flex-1 max-w-sm px-3 py-1.5 bg-slate-900 text-white rounded-lg border border-purple-500/40 focus:outline-none focus:border-purple-400 text-xs font-mono"
+                  />
+                  <button
+                    onClick={() => {
+                      if (pdfFile) handlePdfFile(pdfFile, pdfPassword);
+                    }}
+                    disabled={!pdfPassword || isProcessing}
+                    className="px-4 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold text-xs rounded-lg shadow-sm transition-all cursor-pointer"
+                  >
+                    {isProcessing ? 'Decrypting...' : 'Unlock & Parse'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Dual Input: File Upload or Paste Text */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {/* Option A: Direct PDF Upload */}
+              <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                    <Upload className="w-4 h-4 text-purple-400" />
+                    Option 1: Upload PDF File
+                  </span>
+                  <span className="text-[10px] text-slate-500">.pdf files</span>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Select your holding statement or tradebook PDF from your computer. Supports multi-page statements.
+                </p>
+
+                <label className="block w-full cursor-pointer">
+                  <input
+                    type="file"
+                    accept=".pdf"
+                    onChange={handleFileChange}
+                    className="hidden"
+                  />
+                  <div className="border-2 border-dashed border-slate-800 hover:border-purple-500/80 rounded-xl p-5 text-center text-xs text-slate-300 bg-slate-900/40 hover:bg-slate-900/70 transition-all flex flex-col items-center justify-center gap-2">
+                    <FileText className="w-6 h-6 text-purple-400" />
+                    <span className="font-semibold text-white">
+                      {fileName && fileName.endsWith('.pdf') ? `Selected: ${fileName}` : 'Click to Browse & Select PDF'}
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      Supports Zerodha, Groww, Angel One, Upstox, CDSL / NSDL CAS
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {/* Option B: Copy-Paste Text directly from PDF */}
+              <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                    <Copy className="w-4 h-4 text-emerald-400" />
+                    Option 2: Paste Statement Text / Table
+                  </span>
+                  <span className="text-[10px] text-slate-500">Instant extraction</span>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Open your statement in any browser or PDF reader, select and copy the table text (Ctrl+C), and paste it here:
+                </p>
+
+                <textarea
+                  rows={4}
+                  value={pastedStatementText}
+                  onChange={(e) => setPastedStatementText(e.target.value)}
+                  placeholder="Paste table text here... Example:&#10;RELIANCE  2026-06-15  BUY  25  1220.50&#10;TCS       2026-07-10  BUY  10  3850.00"
+                  className="w-full p-2.5 bg-slate-900 text-xs font-mono text-slate-200 placeholder-slate-600 rounded-xl border border-slate-700/80 focus:outline-none focus:border-purple-500 resize-none"
+                />
+
+                <button
+                  type="button"
+                  onClick={handleParsePastedText}
+                  disabled={!pastedStatementText.trim() || isProcessing}
+                  className="w-full py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Parse Pasted Statement</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Quick Broker Download Guides (How to get Excel/CSV directly) */}
+            <div className="mt-4 p-4 bg-slate-900/60 border border-slate-800 rounded-xl space-y-3">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                  <HelpCircle className="w-4 h-4 text-amber-400" />
+                  Pro-Tip: Download native Excel / CSV from your broker in 30 seconds
+                </span>
+                <span className="text-[10px] text-emerald-400 font-semibold">100% Precision</span>
+              </div>
+
+              {/* Broker Switcher */}
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { id: 'zerodha', label: 'Zerodha Kite / Console' },
+                  { id: 'groww', label: 'Groww' },
+                  { id: 'angel', label: 'Angel One' },
+                  { id: 'upstox', label: 'Upstox' },
+                  { id: 'cas', label: 'CDSL / NSDL CAS' },
+                ].map((b) => (
+                  <button
+                    key={b.id}
+                    onClick={() => setActiveBrokerGuide(b.id as any)}
+                    className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all ${
+                      activeBrokerGuide === b.id
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                        : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    {b.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Instructions */}
+              <div className="text-xs text-slate-300 space-y-1.5 bg-slate-950/70 p-3 rounded-lg border border-slate-800/80 leading-relaxed">
+                {activeBrokerGuide === 'zerodha' && (
+                  <p>
+                    1. Go to <a href="https://console.zerodha.com" target="_blank" rel="noreferrer" className="text-emerald-400 underline font-semibold">console.zerodha.com</a> &gt; <strong>Portfolio</strong> &gt; <strong>Holdings</strong>.
+                    <br />
+                    2. Click the <strong>Download icon</strong> at the top right and select <strong>XLSX</strong>.
+                    <br />
+                    3. For trades: Go to <strong>Reports</strong> &gt; <strong>Tradebook</strong> &gt; Select Date Range &gt; Click <strong>Download XLSX / CSV</strong>.
+                    <br />
+                    4. Drop that file directly into Dalal Diary's for instant zero-loss import!
+                  </p>
+                )}
+                {activeBrokerGuide === 'groww' && (
+                  <p>
+                    1. Open the Groww web portal or app &gt; Click on your <strong>Profile photo</strong>.
+                    <br />
+                    2. Go to <strong>Reports</strong> &gt; <strong>Stocks P&amp;L</strong> or <strong>Holdings Statement</strong>.
+                    <br />
+                    3. When exporting, choose <strong>Excel (.xlsx)</strong> instead of PDF.
+                    <br />
+                    4. Drop the Excel file into <strong>Import Transactions</strong> or <strong>Import Stocks</strong>.
+                  </p>
+                )}
+                {activeBrokerGuide === 'angel' && (
+                  <p>
+                    1. Log in to Angel One &gt; <strong>Trade / Portfolio</strong>.
+                    <br />
+                    2. Navigate to <strong>Reports</strong> &gt; <strong>Transaction History / Trade Book</strong>.
+                    <br />
+                    3. Click <strong>Export as CSV</strong>.
+                    <br />
+                    4. Upload directly into Dalal Diary's!
+                  </p>
+                )}
+                {activeBrokerGuide === 'upstox' && (
+                  <p>
+                    1. Log in to Upstox &gt; <strong>Account</strong> &gt; <strong>Reports</strong>.
+                    <br />
+                    2. Select <strong>Holdings</strong> or <strong>Tradebook</strong>.
+                    <br />
+                    3. Click <strong>Download Excel</strong>.
+                  </p>
+                )}
+                {activeBrokerGuide === 'cas' && (
+                  <p>
+                    1. Visit <a href="https://web.cdslindia.com/myeasi" target="_blank" rel="noreferrer" className="text-emerald-400 underline font-semibold">CDSL myEasi</a> or <a href="https://eservices.nsdl.com/" target="_blank" rel="noreferrer" className="text-emerald-400 underline font-semibold">NSDL e-Services</a>.
+                    <br />
+                    2. Download your e-CAS statement. If you have the PDF, upload it above and enter your 10-digit PAN (in UPPERCASE) as password.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Validation Preview Tables when parsed from PDF */}
+          {transactionsPreview.length > 0 && (
+            <div className="bg-[#111827] border border-slate-800 rounded-xl overflow-hidden shadow-sm space-y-4">
+              <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/60">
+                <div>
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                    PDF Parsed Transactions: {transactionsPreview.length} Rows
+                  </h4>
+                  <p className="text-[11px] text-slate-400">
+                    <span className="text-emerald-400 font-bold">
+                      {transactionsPreview.filter((r) => r.isValid).length} Valid
+                    </span>{' '}
+                    •{' '}
+                    <span className="text-rose-400 font-bold">
+                      {transactionsPreview.filter((r) => !r.isValid).length} Errors
+                    </span>
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={resetUpload}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 rounded-lg cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={handleConfirmTransactions}
+                    disabled={transactionsPreview.filter((r) => r.isValid).length === 0 || isProcessing}
+                    className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-lg shadow-md disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {isProcessing ? 'Importing...' : 'Confirm & Import Transactions'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto max-h-96">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-900 text-slate-400 uppercase font-semibold text-[10px] tracking-wider border-b border-slate-800 sticky top-0">
+                    <tr>
+                      <th className="py-2.5 px-3">Row</th>
+                      <th className="py-2.5 px-3">Date</th>
+                      <th className="py-2.5 px-3">Stock</th>
+                      <th className="py-2.5 px-3">Type</th>
+                      <th className="py-2.5 px-3 text-right">Quantity</th>
+                      <th className="py-2.5 px-3 text-right">Price</th>
+                      <th className="py-2.5 px-3">Validation Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {transactionsPreview.map((row) => (
+                      <tr
+                        key={row.rowIndex}
+                        className={row.isValid ? 'hover:bg-slate-800/30' : 'bg-rose-500/5 hover:bg-rose-500/10'}
+                      >
+                        <td className="py-2.5 px-3 font-mono text-slate-500">{row.rowIndex}</td>
+                        <td className="py-2.5 px-3 font-mono text-slate-300">
+                          {formatDateDDMMYYYY(row.data.date)}
+                        </td>
+                        <td className="py-2.5 px-3 font-bold text-white">
+                          {stocks.find((s) => s.id === row.data.stockId)?.symbol || `Stock #${row.data.stockId}`}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              row.data.type === 'BUY'
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                            }`}
+                          >
+                            {row.data.type}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-white tabular-nums">
+                          {row.data.quantity}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-white tabular-nums">
+                          {formatINR(row.data.price)}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          {row.isValid ? (
+                            <span className="text-emerald-400 font-semibold text-[11px] flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" /> Ready
+                            </span>
+                          ) : (
+                            <span className="text-rose-400 text-[11px] font-semibold flex items-center gap-1">
+                              <AlertCircle className="w-3 h-3 shrink-0" />
+                              {row.errors.join('; ')}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {stocksPreview.length > 0 && transactionsPreview.length === 0 && (
+            <div className="bg-[#111827] border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+              <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/60">
+                <div>
+                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                    PDF Parsed Stock Holdings: {stocksPreview.length} Rows
+                  </h4>
+                  <p className="text-[11px] text-slate-400">
+                    <span className="text-emerald-400 font-bold">
+                      {stocksPreview.filter((r) => r.isValid).length} Valid
+                    </span>{' '}
+                    •{' '}
+                    <span className="text-rose-400 font-bold">
+                      {stocksPreview.filter((r) => !r.isValid).length} Errors
+                    </span>
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={resetUpload}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 rounded-lg cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={handleConfirmStocks}
+                    disabled={stocksPreview.filter((r) => r.isValid).length === 0 || isProcessing}
+                    className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-lg shadow-md disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {isProcessing ? 'Importing...' : 'Confirm & Import Stocks'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto max-h-96">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-900 text-slate-400 uppercase font-semibold text-[10px] tracking-wider border-b border-slate-800 sticky top-0">
+                    <tr>
+                      <th className="py-2.5 px-3">Row</th>
+                      <th className="py-2.5 px-3">NSE Symbol</th>
+                      <th className="py-2.5 px-3">BSE Code</th>
+                      <th className="py-2.5 px-3">Company Name</th>
+                      <th className="py-2.5 px-3">Sector</th>
+                      <th className="py-2.5 px-3">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {stocksPreview.map((row) => (
+                      <tr
+                        key={row.rowIndex}
+                        className={row.isValid ? 'hover:bg-slate-800/30' : 'bg-rose-500/5 hover:bg-rose-500/10'}
+                      >
+                        <td className="py-2.5 px-3 font-mono text-slate-500">{row.rowIndex}</td>
+                        <td className="py-2.5 px-3 font-bold text-white">{row.data.symbol}</td>
+                        <td className="py-2.5 px-3 font-mono text-slate-300">{row.data.bseCode}</td>
+                        <td className="py-2.5 px-3 text-slate-300">{row.data.name}</td>
+                        <td className="py-2.5 px-3 text-slate-400">{row.data.sector}</td>
+                        <td className="py-2.5 px-3">
+                          {row.isValid ? (
+                            <span className="text-emerald-400 font-semibold text-[11px] flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" /> Ready
+                            </span>
+                          ) : (
+                            <span className="text-rose-400 text-[11px] font-semibold flex items-center gap-1">
+                              <AlertCircle className="w-3 h-3 shrink-0" />
+                              {row.errors.join('; ')}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 6: EXPORT CENTER */}
       {activeSubTab === 'export' && (
         <div className="space-y-6">
           {/* Main Featured Multi-sheet Excel Card */}

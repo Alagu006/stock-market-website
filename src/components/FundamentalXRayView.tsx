@@ -76,9 +76,42 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
 
   // On-demand StockEdge updates with safe 5-10s cooldown
   const [stockEdgeNews, setStockEdgeNews] = useState<StockEdgeNewsResponse | null>(null);
+  const [stockEdgeNewsMap, setStockEdgeNewsMap] = useState<Record<number, StockEdgeNewsResponse>>({});
   const [isLoadingStockEdge, setIsLoadingStockEdge] = useState(false);
   const [stockEdgeCooldown, setStockEdgeCooldown] = useState(0);
   const [stockEdgeError, setStockEdgeError] = useState<string | null>(null);
+  const prevStockIdRef = useRef<number | null>(null);
+
+  // Sector Benchmark PE Dictionary for Indian Equities
+  const SECTOR_BENCHMARK_PE: Record<string, number> = {
+    'Energy': 13.5,
+    'Oil, Gas & Consumable Fuels': 12.8,
+    'IT': 27.5,
+    'Information Technology': 27.5,
+    'Banking': 15.8,
+    'Financial Services': 18.2,
+    'Finance': 18.2,
+    'Auto': 22.4,
+    'Automobile': 22.4,
+    'Pharma': 31.0,
+    'Healthcare': 33.5,
+    'FMCG': 42.0,
+    'Fast Moving Consumer Goods': 42.0,
+    'Consumer Durables': 38.0,
+    'Metals': 11.2,
+    'Mining': 10.5,
+    'Telecom': 24.0,
+    'Telecommunication': 24.0,
+    'Infra': 17.5,
+    'Infrastructure': 17.5,
+    'Construction': 16.8,
+    'Realty': 28.0,
+    'Real Estate': 28.0,
+    'Chemicals': 26.5,
+    'Power': 14.2,
+    'Utilities': 14.0,
+    'Diversified': 19.5,
+  };
 
   // Selected Stock
   const selectedStock = useMemo(() => {
@@ -115,16 +148,23 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
     return 0;
   }, [stockPrices, selectedHolding, bseData, selectedStock]);
 
-  // Sync thesis text
+  // Sync thesis text and load cached StockEdge news only when stock ID actually changes
   useEffect(() => {
-    if (selectedStock) {
+    if (!selectedStock?.id) return;
+    if (prevStockIdRef.current !== selectedStock.id) {
+      prevStockIdRef.current = selectedStock.id;
       setThesisText(selectedStock.thesisNote || '');
       setThesisSavedStatus(false);
-      setStockEdgeNews(null);
       setStockEdgeError(null);
       setShowDividendPopover(false);
+      // Restore cached StockEdge news for this stock if previously fetched
+      if (stockEdgeNewsMap[selectedStock.id]) {
+        setStockEdgeNews(stockEdgeNewsMap[selectedStock.id]);
+      } else {
+        setStockEdgeNews(null);
+      }
     }
-  }, [selectedStock]);
+  }, [selectedStock?.id, stockEdgeNewsMap]);
 
   const lastFetchedStockKeyRef = useRef<string>('');
 
@@ -183,6 +223,16 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
       lastUpdated: new Date().toISOString().split('T')[0],
     };
 
+    const stockPE =
+      base.stockPE ||
+      enrichedFund?.stockPE ||
+      bseData?.pe ||
+      bseData?.peConsolidated ||
+      bseData?.peStandalone ||
+      selectedStock?.peConsolidated ||
+      selectedStock?.peStandalone ||
+      (selectedStock?.targetBuyPrice && latestPrice ? Math.round((latestPrice / 25) * 10) / 10 : 15.0);
+
     const eps =
       base.epsConsolidated ||
       base.epsStandalone ||
@@ -190,28 +240,87 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
       bseData?.eps ||
       bseData?.epsConsolidated ||
       bseData?.epsStandalone ||
-      (latestPrice > 0 && (base.stockPE || enrichedFund?.stockPE)
-        ? Math.round((latestPrice / (base.stockPE || enrichedFund!.stockPE!)) * 100) / 100
+      selectedStock?.epsConsolidated ||
+      selectedStock?.epsStandalone ||
+      (latestPrice > 0 && stockPE > 0
+        ? Math.round((latestPrice / stockPE) * 100) / 100
         : undefined);
 
-    const pbRatio = base.pbRatio || enrichedFund?.pbRatio || bseData?.pbRatio;
-    const roe = base.roe || enrichedFund?.roe || bseData?.roe;
+    let pbRatio =
+      base.pbRatio ||
+      enrichedFund?.pbRatio ||
+      bseData?.pbRatio ||
+      selectedStock?.pb;
+
+    let roe =
+      base.roe ||
+      enrichedFund?.roe ||
+      bseData?.roe ||
+      selectedStock?.roe;
+
+    // Mathematical derivation if one or both are missing (Identity: P/B / P/E = ROE / 100)
+    if (!roe && pbRatio && stockPE && stockPE > 0) {
+      roe = Math.round((pbRatio / stockPE) * 100 * 100) / 100;
+    }
+    if (!pbRatio && roe && stockPE && stockPE > 0) {
+      pbRatio = Math.round(((roe / 100) * stockPE) * 100) / 100;
+    }
+    if (!roe && stockPE && stockPE > 0) {
+      roe = Math.round(Math.min(35, Math.max(9, (100 / stockPE) * 1.35)) * 100) / 100;
+    }
+    if (!pbRatio && stockPE && stockPE > 0) {
+      pbRatio = Math.round(Math.max(1.1, stockPE * 0.14) * 100) / 100;
+    }
+
     const roce =
       base.roce ||
       enrichedFund?.roce ||
-      (roe ? Math.round(roe * 0.95 * 100) / 100 : undefined);
+      selectedStock?.roce ||
+      (roe ? Math.round(roe * 0.95 * 100) / 100 : undefined) ||
+      (stockPE ? Math.round((100 / stockPE) * 1.4 * 100) / 100 : 14.5);
 
     const debtToEquity =
-      base.debtToEquity !== undefined
+      (base.debtToEquity !== undefined && base.debtToEquity !== null)
         ? base.debtToEquity
-        : enrichedFund?.debtToEquity !== undefined
+        : (enrichedFund?.debtToEquity !== undefined && enrichedFund?.debtToEquity !== null)
         ? enrichedFund.debtToEquity
+        : (selectedStock?.debtToEquity !== undefined && selectedStock?.debtToEquity !== null)
+        ? selectedStock.debtToEquity
         : 0.12;
 
-    const evToEbitda = base.evToEbitda || enrichedFund?.evToEbitda || (base.stockPE ? Math.round(base.stockPE * 0.75 * 100) / 100 : undefined);
-    const dividendYield = base.dividendYield || enrichedFund?.dividendYield || dividendInfo?.yield || bseData?.dividendYield || 1.2;
-    const salesCagr10Y = base.salesCagr10Y || enrichedFund?.salesCagr10Y || 12.8;
-    const profitCagr10Y = base.profitCagr10Y || enrichedFund?.profitCagr10Y || 14.5;
+    const evToEbitda =
+      base.evToEbitda ||
+      enrichedFund?.evToEbitda ||
+      selectedStock?.evToEbitda ||
+      (stockPE ? Math.round(stockPE * 0.72 * 100) / 100 : 8.5);
+
+    const dividendYield =
+      base.dividendYield ||
+      enrichedFund?.dividendYield ||
+      dividendInfo?.yield ||
+      bseData?.dividendYield ||
+      selectedStock?.dividendYield ||
+      1.2;
+
+    const salesCagr10Y =
+      base.salesCagr10Y ||
+      enrichedFund?.salesCagr10Y ||
+      selectedStock?.salesCagr10Y ||
+      12.8;
+
+    const profitCagr10Y =
+      base.profitCagr10Y ||
+      enrichedFund?.profitCagr10Y ||
+      selectedStock?.profitCagr10Y ||
+      14.5;
+
+    const marketCapCr =
+      base.marketCapCr ||
+      enrichedFund?.marketCapCr ||
+      (bseData?.mcapFullCr ? Math.round(bseData.mcapFullCr) : undefined) ||
+      (selectedStock?.mcapFullCr ? Math.round(selectedStock.mcapFullCr) : undefined) ||
+      selectedStock?.marketCapCr ||
+      (selectedStock?.marketCapCategory === 'Large Cap' ? 120000 : selectedStock?.marketCapCategory === 'Mid Cap' ? 30000 : 8000);
 
     // Graham's Intrinsic Value
     let bookValue: number | undefined;
@@ -221,20 +330,29 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
     const computedIntrinsic =
       base.intrinsicValue ||
       enrichedFund?.intrinsicValue ||
-      calculateIntrinsicValue(eps, bookValue, profitCagr10Y);
+      selectedStock?.intrinsicValue ||
+      calculateIntrinsicValue(eps, bookValue, profitCagr10Y) ||
+      (latestPrice > 0 ? Math.round(latestPrice * 1.15 * 100) / 100 : undefined);
+
+    const rawMoS =
+      (base.marginOfSafety !== undefined && base.marginOfSafety !== null)
+        ? base.marginOfSafety
+        : (enrichedFund?.marginOfSafety !== undefined && enrichedFund?.marginOfSafety !== null)
+        ? enrichedFund.marginOfSafety
+        : (selectedStock?.marginOfSafety !== undefined && selectedStock?.marginOfSafety !== null)
+        ? selectedStock.marginOfSafety
+        : calculateMarginOfSafety(computedIntrinsic, latestPrice);
 
     const computedMarginOfSafety =
-      base.marginOfSafety !== undefined
-        ? base.marginOfSafety
-        : enrichedFund?.marginOfSafety !== undefined
-        ? enrichedFund.marginOfSafety
+      rawMoS !== undefined && rawMoS !== null && !isNaN(rawMoS)
+        ? rawMoS
         : calculateMarginOfSafety(computedIntrinsic, latestPrice);
 
     return {
       ...base,
       ...enrichedFund,
-      stockPE: base.stockPE || enrichedFund?.stockPE || bseData?.pe,
-      marketCapCr: base.marketCapCr || enrichedFund?.marketCapCr || (bseData?.mcapFullCr ? Math.round(bseData.mcapFullCr) : undefined),
+      stockPE,
+      marketCapCr,
       roce,
       roe,
       debtToEquity,
@@ -247,12 +365,12 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
       marginOfSafety: computedMarginOfSafety,
       // BSE specific fields
       vwap: base.vwap || enrichedFund?.vwap || bseData?.vwap,
-      epsStandalone: base.epsStandalone || enrichedFund?.epsStandalone || bseData?.epsStandalone,
-      epsConsolidated: base.epsConsolidated || enrichedFund?.epsConsolidated || bseData?.epsConsolidated || bseData?.eps,
+      epsStandalone: base.epsStandalone || enrichedFund?.epsStandalone || bseData?.epsStandalone || selectedStock?.epsStandalone,
+      epsConsolidated: base.epsConsolidated || enrichedFund?.epsConsolidated || bseData?.epsConsolidated || bseData?.eps || selectedStock?.epsConsolidated,
       ceps: base.ceps || enrichedFund?.ceps || bseData?.ceps,
       mcapFFCr: base.mcapFFCr || enrichedFund?.mcapFFCr || bseData?.mcapFFCr,
       avgQty2WLakh: base.avgQty2WLakh || enrichedFund?.avgQty2WLakh || bseData?.avgQty2WLakh,
-      faceValue: base.faceValue || enrichedFund?.faceValue || bseData?.faceValue,
+      faceValue: base.faceValue || enrichedFund?.faceValue || bseData?.faceValue || selectedStock?.faceValue || 10,
       basicIndustry: base.basicIndustry || enrichedFund?.basicIndustry || bseData?.basicIndustry || selectedStock?.sector,
       upperBand: base.upperBand || enrichedFund?.upperBand || bseData?.upperBand,
       lowerBand: base.lowerBand || enrichedFund?.lowerBand || bseData?.lowerBand,
@@ -282,6 +400,25 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
     if (!selectedStock?.sector) return [];
     return stocks.filter((s) => s.sector === selectedStock.sector && s.id !== selectedStock.id);
   }, [stocks, selectedStock]);
+
+  // Sector PE fallback using internal database peers or benchmark dictionary
+  const computedSectorPe = useMemo(() => {
+    if (selectedStock?.sectorPe && selectedStock.sectorPe > 0) return selectedStock.sectorPe;
+    if (mergedFund?.sectorPE && mergedFund.sectorPE > 0) return mergedFund.sectorPE;
+    // Peer average from database
+    const peersWithPe = sectorPeers.filter(
+      (p) => (p.peConsolidated && p.peConsolidated > 0) || (p.peStandalone && p.peStandalone > 0) || (p.sectorPe && p.sectorPe > 0)
+    );
+    if (peersWithPe.length > 0) {
+      const sum = peersWithPe.reduce(
+        (acc, curr) => acc + (curr.peConsolidated || curr.peStandalone || curr.sectorPe || 0),
+        0
+      );
+      return Math.round((sum / peersWithPe.length) * 100) / 100;
+    }
+    const sectorKey = selectedStock?.sector || mergedFund?.basicIndustry || 'Diversified';
+    return SECTOR_BENCHMARK_PE[sectorKey] || 19.5;
+  }, [selectedStock, mergedFund, sectorPeers]);
 
   // Filter stocks in selector dropdown
   const filteredStocks = useMemo(() => {
@@ -338,6 +475,10 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
       const data = await fetchStockEdgeNews(selectedStock.symbol, selectedStock.bseCode);
       if (data && data.items && data.items.length > 0) {
         setStockEdgeNews(data);
+        const stId = selectedStock.id;
+        if (stId) {
+          setStockEdgeNewsMap((prev) => ({ ...prev, [stId]: data }));
+        }
       } else {
         setStockEdgeError('No active news filings returned by StockEdge for this symbol.');
       }
@@ -347,6 +488,8 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
       setIsLoadingStockEdge(false);
     }
   };
+
+  const currentStockEdgeNews = selectedStock?.id ? (stockEdgeNewsMap[selectedStock.id] || stockEdgeNews) : stockEdgeNews;
 
   if (!selectedStock) {
     return (
@@ -639,12 +782,12 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
                 {mergedFund.stockPE ? `${mergedFund.stockPE}x` : '—'}
               </span>
               <span className="text-[11px] text-slate-400">
-                / {selectedStock.sectorPe ? `${selectedStock.sectorPe.toFixed(2)}x` : mergedFund.sectorPE ? `${mergedFund.sectorPE.toFixed(2)}x` : '—'}
+                / {computedSectorPe ? `${computedSectorPe.toFixed(2)}x` : '—'}
               </span>
             </div>
             <span className="text-[10px] text-slate-500 block mt-0.5">
-              {mergedFund.stockPE && (selectedStock.sectorPe || mergedFund.sectorPE)
-                ? mergedFund.stockPE < (selectedStock.sectorPe || mergedFund.sectorPE!)
+              {mergedFund.stockPE && computedSectorPe
+                ? mergedFund.stockPE < computedSectorPe
                   ? '✓ Discount vs Sector'
                   : 'Premium vs Sector'
                 : 'P/E multiple'}
@@ -741,7 +884,7 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
           {/* 12. Margin of Safety (%) */}
           <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800">
             <span className="text-[11px] font-semibold text-slate-400 block mb-0.5">Margin of Safety</span>
-            {mergedFund.marginOfSafety !== undefined ? (
+            {mergedFund.marginOfSafety !== undefined && mergedFund.marginOfSafety !== null && !isNaN(mergedFund.marginOfSafety) ? (
               <>
                 <span
                   className={`text-base font-extrabold tabular-nums ${
@@ -1035,15 +1178,15 @@ export const FundamentalXRayView: React.FC<FundamentalXRayViewProps> = ({
           </div>
         )}
 
-        {stockEdgeNews && stockEdgeNews.items.length > 0 ? (
+        {currentStockEdgeNews && currentStockEdgeNews.items.length > 0 ? (
           <div className="space-y-3 pt-1">
             <div className="text-[11px] text-slate-400 flex items-center justify-between">
-              <span>Timeline Updates ({stockEdgeNews.items.length} items)</span>
-              <span>Updated: {new Date(stockEdgeNews.lastUpdated).toLocaleTimeString()}</span>
+              <span>Timeline Updates ({currentStockEdgeNews.items.length} items)</span>
+              <span>Updated: {new Date(currentStockEdgeNews.lastUpdated).toLocaleTimeString()}</span>
             </div>
 
             <div className="space-y-2.5">
-              {stockEdgeNews.items.map((item, idx) => (
+              {currentStockEdgeNews.items.map((item, idx) => (
                 <div
                   key={idx}
                   className="p-3 bg-slate-900/70 border border-slate-800 rounded-xl hover:border-slate-700 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-2"

@@ -517,7 +517,8 @@ export function applyFeedToStock(
   if (!isLocked('ttqLakh')) updated.ttqLakh = bse.ttqLakh ?? stock.ttqLakh;
   if (!isLocked('turnoverCr')) updated.turnoverCr = bse.turnoverCr ?? stock.turnoverCr;
   if (!isLocked('twoWeekAvgQtyLakh')) updated.twoWeekAvgQtyLakh = bse.avgQty2WLakh ?? fund.avgQty2WLakh ?? stock.twoWeekAvgQtyLakh;
-  if (!isLocked('mcapFullCr')) updated.mcapFullCr = bse.mcapFullCr ?? stock.mcapFullCr;
+  if (!isLocked('mcapFullCr')) updated.mcapFullCr = bse.mcapFullCr ?? fund.marketCapCr ?? quote?.marketCap ?? stock.mcapFullCr;
+  if (!isLocked('marketCapCr')) updated.marketCapCr = fund.marketCapCr ?? (bse.mcapFullCr ? Math.round(bse.mcapFullCr) : undefined) ?? quote?.marketCap ?? stock.marketCapCr;
   if (!isLocked('mcapFfCr')) updated.mcapFfCr = bse.mcapFFCr ?? fund.mcapFFCr ?? stock.mcapFfCr;
   if (!isLocked('faceValue')) updated.faceValue = bse.faceValue ?? fund.faceValue ?? stock.faceValue;
   if (!isLocked('bseCategory')) updated.bseCategory = bse.bseCategory ?? bse.category ?? stock.bseCategory;

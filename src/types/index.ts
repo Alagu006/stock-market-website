@@ -53,6 +53,7 @@ export interface Stock {
   dividendYield?: number;
   intrinsicValue?: number;
   marginOfSafety?: number;
+  marketCapCr?: number;
   // Real-time market feed fields
   currentPrice?: number;
   previousClose?: number;

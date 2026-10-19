@@ -64,30 +64,46 @@ export const TopIndicesRibbon: React.FC<TopIndicesRibbonProps> = ({
         <div className="flex items-center gap-3 sm:gap-6 overflow-x-auto no-scrollbar w-full md:w-auto">
           {items.map((item) => {
             const d = item.data;
-            const isPositive = (d?.change ?? 0) >= 0;
+            const hasData = Boolean(d && d.level > 0);
+            const isPositive = (d?.change ?? 0) > 0;
+            const isNeutral = (d?.change ?? 0) === 0;
+
+            const tooltipText = hasData
+              ? `${item.label}\nLevel: ₹${formatIndexVal(d?.level)}\nPrev Close: ₹${formatIndexVal(d?.previousClose)}\nDay High: ₹${formatIndexVal(d?.dayHigh)}\nDay Low: ₹${formatIndexVal(d?.dayLow)}`
+              : undefined;
 
             return (
-              <div key={item.key} className="flex items-center gap-2 shrink-0">
+              <div
+                key={item.key}
+                className="flex items-center gap-2 shrink-0 cursor-default"
+                title={tooltipText}
+              >
                 <span className="font-bold text-slate-400 text-[11px] tracking-wide">
                   {item.label}
                 </span>
                 <span className="font-extrabold text-white text-xs font-mono">
                   {formatIndexVal(d?.level)}
                 </span>
-                <span
-                  className={`flex items-center text-[10px] font-bold font-mono px-1.5 py-0.5 rounded ${
-                    isPositive
-                      ? 'bg-emerald-500/10 text-emerald-400'
-                      : 'bg-rose-500/10 text-rose-400'
-                  }`}
-                >
-                  {isPositive ? (
-                    <TrendingUp className="w-2.5 h-2.5 mr-0.5" />
-                  ) : (
-                    <TrendingDown className="w-2.5 h-2.5 mr-0.5" />
-                  )}
-                  {formatPoints(d?.change)} ({formatPct(d?.changePercent)})
-                </span>
+                {hasData ? (
+                  <span
+                    className={`flex items-center text-[10px] font-bold font-mono px-1.5 py-0.5 rounded ${
+                      isNeutral
+                        ? 'bg-slate-800 text-slate-400'
+                        : isPositive
+                        ? 'bg-emerald-500/10 text-emerald-400'
+                        : 'bg-rose-500/10 text-rose-400'
+                    }`}
+                  >
+                    {!isNeutral && (isPositive ? (
+                      <TrendingUp className="w-2.5 h-2.5 mr-0.5" />
+                    ) : (
+                      <TrendingDown className="w-2.5 h-2.5 mr-0.5" />
+                    ))}
+                    {formatPoints(d?.change)} ({formatPct(d?.changePercent)})
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-slate-500 font-mono">--</span>
+                )}
               </div>
             );
           })}
