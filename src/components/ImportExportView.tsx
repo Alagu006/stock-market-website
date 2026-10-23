@@ -209,15 +209,21 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
     setStatusMessage(null);
 
     try {
-      // 1. Prepare Stock master rows
-      const stocksToImport: Omit<Stock, 'id' | 'createdAt'>[] = rawParsedRows.map((r) => ({
-        symbol: r.symbol,
-        bseCode: r.bseCode || '',
-        name: r.name,
-        sector: r.sector || 'Diversified',
-        marketCapCategory: r.marketCapCategory || 'Mid Cap',
-      }));
-
+      // 1. Prepare unique Stock master rows (deduplicating by symbol)
+      const uniqueStockMap = new Map<string, Omit<Stock, 'id' | 'createdAt'>>();
+      for (const r of rawParsedRows) {
+        const sym = (r.symbol || '').trim().toUpperCase();
+        if (sym && !uniqueStockMap.has(sym)) {
+          uniqueStockMap.set(sym, {
+            symbol: sym,
+            bseCode: r.bseCode || '',
+            name: r.name,
+            sector: r.sector || 'Diversified',
+            marketCapCategory: r.marketCapCategory || 'Mid Cap',
+          });
+        }
+      }
+      const stocksToImport = Array.from(uniqueStockMap.values());
       await onConfirmImportStocks(stocksToImport);
 
       // 2. Fetch updated stocks to get their IDs
@@ -231,7 +237,7 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
 
       for (const r of rawParsedRows) {
         const sId = stockMap.get((r.symbol || '').toUpperCase());
-        if (sId && r.holdingQuantity > 0 && r.holdingRate > 0) {
+        if (sId && r.holdingQuantity > 0 && r.holdingRate >= 0) {
           txsToImport.push({
             stockId: sId,
             symbol: r.symbol,
@@ -364,7 +370,7 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
           },
           rawRow: r,
           warnings: [],
-          isValid: Boolean(r.symbol && r.holdingQuantity > 0 && r.holdingRate > 0),
+          isValid: Boolean(r.symbol && r.holdingQuantity > 0 && r.holdingRate >= 0),
           errors: [],
         };
       });

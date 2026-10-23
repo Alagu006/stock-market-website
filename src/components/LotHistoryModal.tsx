@@ -23,11 +23,12 @@ export const LotHistoryModal: React.FC<LotHistoryModalProps> = ({
   costMethod,
   onDeleteTransaction,
 }) => {
-  if (!isOpen || !stock || !stock.id) return null;
-
   const position = useMemo(() => {
-    return calculateStockPosition(stock.id!, transactions, corporateActions, costMethod);
-  }, [stock, transactions, corporateActions, costMethod]);
+    if (!isOpen || !stock?.id) return null;
+    return calculateStockPosition(stock.id, transactions, corporateActions, costMethod);
+  }, [isOpen, stock, transactions, corporateActions, costMethod]);
+
+  if (!isOpen || !stock || !stock.id || !position) return null;
 
   const handleDelete = async (txId: number | undefined) => {
     if (!txId) return;

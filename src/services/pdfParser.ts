@@ -292,6 +292,22 @@ export async function extractTextFromPdf(
 }
 
 /**
+ * Checks whether a line is statement metadata, title, account info, or column header
+ */
+function isStatementMetadataOrHeader(line: string): boolean {
+  const l = line.replace(/\u00A0/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!l) return true;
+  if (/^page\s+\d+(\s+of\s+\d+)?$/i.test(l) || /page\s*:\s*\d+/i.test(l)) return true;
+  if (l.includes('portfolio valuation') || l.includes('holding statement') || l.includes('capital gain') || l.includes('statement of holdings')) return true;
+  if (l.includes('generated on') || l.includes('report as on') || l.includes('as on date') || l.includes('valuation as on') || l.includes('date :')) return true;
+  if (l.includes('client code') || l.includes('client name') || l.includes('account no') || l.includes('dp id') || l.includes('ucc :') || l.includes('pan :') || l.includes('pan no')) return true;
+  if (l.includes('asset class') || l.includes('buy quantity') || l.includes('holding quantity') || l.includes('market rate') || l.includes('unrealised') || l.includes('realised profit') || l.includes('holding rate')) return true;
+  if (l.includes('grand total') || l.includes('sub total') || l.includes('net total') || l.includes('total equity') || l.includes('disclaimer') || l.includes('confidential') || l.includes('brought forward') || l.includes('carried forward')) return true;
+  if (l === 'equity' || l === 'debt' || l === 'mutual funds' || l === 'derivatives' || l === 'cash' || l === 'commodities') return true;
+  return false;
+}
+
+/**
  * Detect and parse holding/portfolio valuation report statements
  * Handles multi-line wrapped company names and multi-column numeric rows
  */
@@ -301,12 +317,12 @@ function parseHoldingValuationStatement(rawLines: string[]): HoldingStatementRow
   const todayDate = new Date().toISOString().split('T')[0];
 
   for (let i = 0; i < rawLines.length; i++) {
-    const line = rawLines[i].trim();
+    const line = rawLines[i].replace(/\u00A0/g, ' ').trim();
     if (!line) continue;
 
-    // Skip section headers like "Equity", "Asset Class", "Grand Total", etc.
-    const lower = line.toLowerCase();
-    if (lower === 'equity' || lower.includes('asset class') || lower.includes('grand total') || lower.includes('sub total')) {
+    // Filter out page headers, metadata, titles, and disclaimers so they never bleed into company names
+    if (isStatementMetadataOrHeader(line)) {
+      prefix = '';
       continue;
     }
 
@@ -343,27 +359,28 @@ function parseHoldingValuationStatement(rawLines: string[]): HoldingStatementRow
       // [0]: Buy Qty, [1]: Buy Value, [2]: Sell Qty, [3]: Sell Value, [4]: Buy Cost Closed,
       // [5]: Sell Cost Closed, [6]: Holding Qty, [7]: Holding Rate (Avg Cost),
       // [8]: Market Rate LTP, [9]: Realised P/L, [10]: Unrealised P/L
-      holdingQty = nums[6] || nums[0];
-      holdingRate = nums[7] || (holdingQty > 0 ? nums[1] / holdingQty : 0);
-      buyValue = nums[1] || (holdingQty * holdingRate);
-      marketPrice = nums[8];
+      holdingQty = nums[6] !== undefined ? nums[6] : nums[0];
+      holdingRate = nums[7] !== undefined ? nums[7] : (holdingQty > 0 ? nums[1] / holdingQty : 0);
+      buyValue = nums[1] !== undefined ? nums[1] : (holdingQty * holdingRate);
+      marketPrice = nums[8] !== undefined ? nums[8] : (holdingRate || 0);
       realizedPnL = nums[9] || 0;
       unrealizedPnL = nums[10] || 0;
     } else if (nums.length >= 6) {
       // 6 to 9 column format: [Qty, AvgPrice, CurrentPrice, Invested, CurrentVal, PnL]
       holdingQty = nums[0];
-      holdingRate = nums[1];
-      marketPrice = nums[2];
+      holdingRate = nums[1] || 0;
+      marketPrice = nums[2] !== undefined ? nums[2] : (holdingRate || 0);
       buyValue = nums[3] || (holdingQty * holdingRate);
       unrealizedPnL = nums[nums.length - 1] || 0;
     }
 
-    if (holdingQty <= 0 && buyValue <= 0) {
+    // A valid holding must have holdingQuantity > 0 (even if buyValue is 0 for spin-offs / demergers)
+    if (holdingQty <= 0) {
       continue;
     }
 
     const equity = resolveIndianEquity(rawName);
-    const currentValue = Number((holdingQty * marketPrice).toFixed(2));
+    const currentValue = Number((holdingQty * (marketPrice || holdingRate || 0)).toFixed(2));
 
     rows.push({
       rawName,
@@ -407,7 +424,10 @@ export function parseStatementText(rawText: string): ParsedStatementResult {
 
   // Check Mode 1: Holding / Valuation Statement (like the user's report)
   const holdingsRows = parseHoldingValuationStatement(rawLines);
-  if (holdingsRows.length >= 2) {
+  if (
+    holdingsRows.length >= 2 ||
+    (holdingsRows.length === 1 && /holding|portfolio|valuation|demat|dp\s*id|ucc/i.test(rawText))
+  ) {
     const totalInvested = Number(holdingsRows.reduce((acc, r) => acc + r.buyValue, 0).toFixed(2));
     const totalCurrentValue = Number(holdingsRows.reduce((acc, r) => acc + r.currentValue, 0).toFixed(2));
     const totalUnrealizedPnL = Number(holdingsRows.reduce((acc, r) => acc + r.unrealizedPnL, 0).toFixed(2));
