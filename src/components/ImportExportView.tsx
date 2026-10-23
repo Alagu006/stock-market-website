@@ -43,6 +43,7 @@ import {
   SCREENER_FIELD_DEFINITIONS,
 } from '../services/importExport';
 import { extractTextFromPdf, parseStatementText } from '../services/pdfParser';
+import { db } from '../db';
 import { formatINR, formatDateDDMMYYYY } from '../utils/formatters';
 
 interface ImportExportViewProps {
@@ -96,6 +97,13 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
   const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
   const [pastedStatementText, setPastedStatementText] = useState<string>('');
   const [activeBrokerGuide, setActiveBrokerGuide] = useState<'zerodha' | 'groww' | 'angel' | 'upstox' | 'cas'>('zerodha');
+  const [detectedStatementType, setDetectedStatementType] = useState<'transactions' | 'stocks' | 'holdings' | 'unknown'>('unknown');
+  const [holdingsSummary, setHoldingsSummary] = useState<{
+    totalHoldings: number;
+    totalInvested: number;
+    totalCurrentValue: number;
+    totalUnrealizedPnL: number;
+  } | null>(null);
 
   // Reset file input
   const resetUpload = () => {
@@ -106,6 +114,8 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
     setPdfFile(null);
     setPdfPassword('');
     setIsPasswordModalOpen(false);
+    setDetectedStatementType('unknown');
+    setHoldingsSummary(null);
   };
 
   // PDF file reader handler
@@ -122,12 +132,14 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
 
       if (parsed.rows.length === 0) {
         throw new Error(
-          'Could not automatically detect tabular rows from this PDF. Please open your PDF, copy the table text, and paste it into the "Paste PDF Statement" box below.'
+          'Could not automatically detect tabular rows from this PDF. Please open your PDF, copy the table text, and paste it into the "Paste Statement Text" box below.'
         );
       }
 
       setDetectedColumns(parsed.detectedColumns);
       setRawParsedRows(parsed.rows);
+      setDetectedStatementType(parsed.detectedType);
+      setHoldingsSummary(parsed.holdingsSummary || null);
       setIsPasswordModalOpen(false);
       setStatusMessage({
         type: 'success',
@@ -164,11 +176,13 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
     try {
       const parsed = parseStatementText(pastedStatementText);
       if (parsed.rows.length === 0) {
-        throw new Error('Could not identify table columns. Please ensure you copied rows containing Date, Symbol, Type, and Qty.');
+        throw new Error('Could not identify table columns. Please ensure you copied rows from your broker holding or transaction statement.');
       }
-      setFileName('Pasted PDF Table');
+      setFileName('Pasted Statement Table');
       setDetectedColumns(parsed.detectedColumns);
       setRawParsedRows(parsed.rows);
+      setDetectedStatementType(parsed.detectedType);
+      setHoldingsSummary(parsed.holdingsSummary || null);
       setStatusMessage({
         type: 'success',
         text: `Extracted ${parsed.rows.length} rows from pasted text! Review the preview below.`,
@@ -182,6 +196,79 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
       setStatusMessage({
         type: 'error',
         text: err.message || 'Failed to parse text.',
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 1-Click Complete Portfolio Import (Registers missing stocks + records BUY transactions + records LTP)
+  const handleConfirmPortfolioHoldings = async () => {
+    if (rawParsedRows.length === 0) return;
+    setIsProcessing(true);
+    setStatusMessage(null);
+
+    try {
+      // 1. Prepare Stock master rows
+      const stocksToImport: Omit<Stock, 'id' | 'createdAt'>[] = rawParsedRows.map((r) => ({
+        symbol: r.symbol,
+        bseCode: r.bseCode || '',
+        name: r.name,
+        sector: r.sector || 'Diversified',
+        marketCapCategory: r.marketCapCategory || 'Mid Cap',
+      }));
+
+      await onConfirmImportStocks(stocksToImport);
+
+      // 2. Fetch updated stocks to get their IDs
+      const allStocks = await db.stocks.toArray();
+      const stockMap = new Map(allStocks.map((s) => [s.symbol.toUpperCase(), s.id]));
+
+      // 3. Prepare BUY transactions & prices
+      const txsToImport: Omit<Transaction, 'id' | 'createdAt'>[] = [];
+      const pricesToRecord: Array<{ stockId: number; symbol: string; price: number; date: string }> = [];
+      const todayDate = new Date().toISOString().split('T')[0];
+
+      for (const r of rawParsedRows) {
+        const sId = stockMap.get((r.symbol || '').toUpperCase());
+        if (sId && r.holdingQuantity > 0 && r.holdingRate > 0) {
+          txsToImport.push({
+            stockId: sId,
+            symbol: r.symbol,
+            type: 'BUY',
+            quantity: r.holdingQuantity,
+            price: r.holdingRate,
+            netAmount: r.buyValue || Number((r.holdingQuantity * r.holdingRate).toFixed(2)),
+            date: r.date || todayDate,
+            note: 'Imported from Portfolio Statement',
+          });
+        }
+        if (sId && r.marketPrice > 0) {
+          pricesToRecord.push({
+            stockId: sId,
+            symbol: r.symbol,
+            price: r.marketPrice,
+            date: todayDate,
+          });
+        }
+      }
+
+      if (txsToImport.length > 0) {
+        await onConfirmImportTransactions(txsToImport);
+      }
+      if (pricesToRecord.length > 0) {
+        await onConfirmBulkPrices(pricesToRecord);
+      }
+
+      setStatusMessage({
+        type: 'success',
+        text: `Successfully imported your complete portfolio! Registered ${stocksToImport.length} stocks and recorded ${txsToImport.length} holdings.`,
+      });
+      resetUpload();
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: err.message || 'Failed to import portfolio holdings.',
       });
     } finally {
       setIsProcessing(false);
@@ -238,14 +325,52 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
 
   // Previews based on active tab
   const stocksPreview: ImportPreviewRow<Stock>[] = React.useMemo(() => {
-    if (activeSubTab !== 'stocks' || rawParsedRows.length === 0) return [];
+    if ((activeSubTab !== 'stocks' && activeSubTab !== 'pdf') || rawParsedRows.length === 0) return [];
+    if (detectedStatementType === 'holdings') {
+      return rawParsedRows.map((r, idx) => ({
+        rowIndex: idx + 1,
+        data: {
+          symbol: r.symbol,
+          bseCode: r.bseCode || '',
+          name: r.name,
+          sector: r.sector || 'Diversified',
+          marketCapCategory: r.marketCapCategory || 'Mid Cap',
+        },
+        rawRow: r,
+        warnings: [],
+        isValid: Boolean(r.symbol && r.name),
+        errors: [],
+      }));
+    }
     return validateStocksImport(rawParsedRows, stocks);
-  }, [activeSubTab, rawParsedRows, stocks]);
+  }, [activeSubTab, rawParsedRows, stocks, detectedStatementType]);
 
   const transactionsPreview: ImportPreviewRow<Transaction>[] = React.useMemo(() => {
-    if (activeSubTab !== 'transactions' || rawParsedRows.length === 0) return [];
+    if ((activeSubTab !== 'transactions' && activeSubTab !== 'pdf') || rawParsedRows.length === 0) return [];
+    if (detectedStatementType === 'holdings') {
+      return rawParsedRows.map((r, idx) => {
+        const existingStock = stocks.find((s) => s.symbol.toUpperCase() === (r.symbol || '').toUpperCase());
+        return {
+          rowIndex: idx + 1,
+          data: {
+            stockId: existingStock?.id || 0,
+            symbol: r.symbol,
+            type: 'BUY' as const,
+            quantity: r.holdingQuantity,
+            price: r.holdingRate,
+            netAmount: r.buyValue || Number((r.holdingQuantity * r.holdingRate).toFixed(2)),
+            date: r.date || new Date().toISOString().split('T')[0],
+            note: 'Imported from Portfolio Statement',
+          },
+          rawRow: r,
+          warnings: [],
+          isValid: Boolean(r.symbol && r.holdingQuantity > 0 && r.holdingRate > 0),
+          errors: [],
+        };
+      });
+    }
     return validateTransactionsImport(rawParsedRows, stocks, transactions, corporateActions);
-  }, [activeSubTab, rawParsedRows, stocks, transactions, corporateActions]);
+  }, [activeSubTab, rawParsedRows, stocks, transactions, corporateActions, detectedStatementType]);
 
   const pricesPreview: ImportPreviewRow<PriceRecord>[] = React.useMemo(() => {
     if (activeSubTab !== 'prices' || rawParsedRows.length === 0) return [];
@@ -1269,8 +1394,112 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
             </div>
           </div>
 
-          {/* Validation Preview Tables when parsed from PDF */}
-          {transactionsPreview.length > 0 && (
+          {/* Mode A: Dedicated Portfolio Holdings Statement View */}
+          {detectedStatementType === 'holdings' && rawParsedRows.length > 0 && (
+            <div className="bg-[#111827] border border-slate-800 rounded-xl overflow-hidden shadow-sm space-y-4 p-4">
+              {/* Top Summary Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+                <div>
+                  <h4 className="text-sm font-extrabold text-white uppercase tracking-wider flex items-center gap-2">
+                    <FileCheck className="w-4 h-4 text-emerald-400" />
+                    <span>Parsed Portfolio Statement ({rawParsedRows.length} Holdings)</span>
+                  </h4>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Extracted from your broker report. Mapped to official NSE tickers, cost bases, and valuations.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={resetUpload}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 rounded-lg cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={handleConfirmPortfolioHoldings}
+                    disabled={isProcessing}
+                    className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer flex items-center gap-1.5 transition-all"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>{isProcessing ? 'Importing Portfolio...' : 'Import Complete Portfolio'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* KPI Cards Strip */}
+              {holdingsSummary && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold">Total Holdings</span>
+                    <p className="text-base font-extrabold text-white mt-0.5">{holdingsSummary.totalHoldings} Stocks</p>
+                  </div>
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold">Total Invested</span>
+                    <p className="text-base font-extrabold text-slate-200 mt-0.5 font-mono">{formatINR(holdingsSummary.totalInvested)}</p>
+                  </div>
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold">Current Value (LTP)</span>
+                    <p className="text-base font-extrabold text-white mt-0.5 font-mono">{formatINR(holdingsSummary.totalCurrentValue)}</p>
+                  </div>
+                  <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold">Unrealised P&amp;L</span>
+                    <p className={`text-base font-extrabold mt-0.5 font-mono ${holdingsSummary.totalUnrealizedPnL >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {holdingsSummary.totalUnrealizedPnL >= 0 ? '+' : ''}{formatINR(holdingsSummary.totalUnrealizedPnL)}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Holdings Table */}
+              <div className="overflow-x-auto max-h-96 border border-slate-800 rounded-xl">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-900 text-slate-400 uppercase font-semibold text-[10px] tracking-wider border-b border-slate-800 sticky top-0">
+                    <tr>
+                      <th className="py-2.5 px-3">#</th>
+                      <th className="py-2.5 px-3">NSE Symbol</th>
+                      <th className="py-2.5 px-3">Company Name</th>
+                      <th className="py-2.5 px-3 text-right">Holding Qty</th>
+                      <th className="py-2.5 px-3 text-right">Avg Rate (₹)</th>
+                      <th className="py-2.5 px-3 text-right">LTP (₹)</th>
+                      <th className="py-2.5 px-3 text-right">Invested (₹)</th>
+                      <th className="py-2.5 px-3 text-right">Current Value (₹)</th>
+                      <th className="py-2.5 px-3 text-right">Unrealised P&amp;L</th>
+                      <th className="py-2.5 px-3 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {rawParsedRows.map((row, idx) => (
+                      <tr key={idx} className="hover:bg-slate-800/30">
+                        <td className="py-2 px-3 font-mono text-slate-500">{idx + 1}</td>
+                        <td className="py-2 px-3 font-bold text-white font-mono">{row.symbol}</td>
+                        <td className="py-2 px-3 text-slate-300">
+                          <div>{row.name}</div>
+                          <div className="text-[10px] text-slate-500">{row.sector} • {row.marketCapCategory}</div>
+                        </td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-200">{row.holdingQuantity}</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-200">₹{Number(row.holdingRate).toFixed(2)}</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-300">₹{Number(row.marketPrice).toFixed(2)}</td>
+                        <td className="py-2 px-3 text-right font-mono text-slate-200">₹{Number(row.buyValue).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                        <td className="py-2 px-3 text-right font-mono text-white font-semibold">₹{Number(row.currentValue).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                        <td className={`py-2 px-3 text-right font-mono font-bold ${(row.unrealizedPnL || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {(row.unrealizedPnL || 0) >= 0 ? '+' : ''}{Number(row.unrealizedPnL || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="py-2 px-3 text-center">
+                          <span className="text-emerald-400 font-semibold text-[11px] inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> Ready
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Mode B: Validation Preview Tables when parsed from PDF (Standard Tradebook) */}
+          {detectedStatementType !== 'holdings' && transactionsPreview.length > 0 && (
             <div className="bg-[#111827] border border-slate-800 rounded-xl overflow-hidden shadow-sm space-y-4">
               <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/60">
                 <div>
@@ -1368,7 +1597,7 @@ export const ImportExportView: React.FC<ImportExportViewProps> = ({
             </div>
           )}
 
-          {stocksPreview.length > 0 && transactionsPreview.length === 0 && (
+          {detectedStatementType !== 'holdings' && stocksPreview.length > 0 && transactionsPreview.length === 0 && (
             <div className="bg-[#111827] border border-slate-800 rounded-xl overflow-hidden shadow-sm">
               <div className="p-4 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/60">
                 <div>
